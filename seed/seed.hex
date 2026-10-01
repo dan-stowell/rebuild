@@ -1,0 +1,83 @@
+; seed.hex -- the bootstrap seed: a hex assembler, hand-written as raw wasm.
+;
+; Input (stdin):  pairs of lowercase hex digits; everything from ';' to the
+;                 end of a line is a comment; other characters are ignored.
+;                 '{' ... '}' emits the byte length of the enclosed output as
+;                 a 5-byte (padded) LEB128 in front of it -- this is what makes
+;                 hand-writing wasm section and function sizes bearable.
+; Output (stdout): the bytes.
+;
+; This file is itself valid input for seed.wasm (it uses explicit sizes, not
+; braces, so that the result is byte-identical to seed.wasm).
+;
+; memory: [0]=iovec.ptr(8) [4]=iovec.len(1) [8]=input byte [12]=nread
+;         [16]=out iovec [24]=nwritten  [1024..]=output buffer
+
+00 61 73 6d 01 00 00 00                       ; magic, version 1
+
+01 0c 02                                      ; type section: 2 types
+  60 04 7f 7f 7f 7f 01 7f                     ;   0: (i32 i32 i32 i32) -> i32
+  60 00 00                                    ;   1: () -> ()
+
+02 44 02                                      ; import section: 2 imports
+  16 77 61 73 69 5f 73 6e 61 70 73 68 6f 74 5f 70 72 65 76 69 65 77 31
+  07 66 64 5f 72 65 61 64 00 00               ;   func 0 = wasi fd_read
+  16 77 61 73 69 5f 73 6e 61 70 73 68 6f 74 5f 70 72 65 76 69 65 77 31
+  08 66 64 5f 77 72 69 74 65 00 00            ;   func 1 = wasi fd_write
+
+03 03 02 01 01                                ; function section: 2 x type 1
+05 03 01 00 10                                ; memory: 16 pages
+06 0c 02                                      ; global section: 2 globals
+  7f 01 41 80 08 0b                           ;   g0 out = 1024 (output cursor)
+  7f 01 41 01 0b                              ;   g1 acc = 1 (hex digit accumulator)
+07 13 02                                      ; export section
+  06 6d 65 6d 6f 72 79 02 00                  ;   "memory"
+  06 5f 73 74 61 72 74 00 03                  ;   "_start" = func 3
+
+0a 97 02 02                                   ; code section: 2 bodies
+
+; func 2: assemble until '}' or end of input.  locals: 0=c 1=p 2=in-comment
+e3 01 01 03 7f
+03 40                                         ; loop
+  41 00 41 00 41 01 41 0c 10 00 1a            ;   fd_read(0, iov=0, 1, &nread=12); drop
+  41 0c 28 02 00 45 0d 01                     ;   if nread == 0: return
+  41 08 2d 00 00 21 00                        ;   c = byte
+  20 00 41 3b 46 20 02 72                     ;   (c == ';' | comment)
+  20 00 41 0a 47 71 22 02                     ;   & c != '\n'  -> comment
+  0d 00                                       ;   if comment: continue
+  20 00 41 fb 00 46 04 40                     ;   if c == '{':
+    23 00 21 01                               ;     p = out
+    23 00 41 05 6a 24 00                      ;     out += 5
+    10 02                                     ;     recurse
+    23 00 20 01 6b 41 05 6b 21 00             ;     c = out - p - 5  (size)
+    20 01 20 00 41 80 01 72 3a 00 00          ;     [p+0] = c | 128
+    20 01 20 00 41 07 76 41 80 01 72 3a 00 01 ;     [p+1] = c>>7 | 128
+    20 01 20 00 41 0e 76 41 80 01 72 3a 00 02 ;     [p+2] = c>>14 | 128
+    20 01 20 00 41 15 76 41 80 01 72 3a 00 03 ;     [p+3] = c>>21 | 128
+    20 01 20 00 41 1c 76 3a 00 04             ;     [p+4] = c>>28
+    0c 01                                     ;     continue
+  0b
+  20 00 41 fd 00 46 0d 01                     ;   if c == '}': return
+  20 00 41 30 6b 22 00 41 09 4b 04 40         ;   c -= '0'; if c > 9:
+    20 00 41 31 6b 41 05 4b 0d 01             ;     if c-49 > 5: continue (not a-f)
+    20 00 41 27 6b 21 00                      ;     c -= 39
+  0b
+  23 01 41 04 74 20 00 72 22 00 24 01         ;   acc = c = acc << 4 | c
+  20 00 41 ff 01 4b 04 40                     ;   if c > 255:
+    23 00 20 00 3a 00 00                      ;     [out] = c
+    23 00 41 01 6a 24 00                      ;     out += 1
+    41 01 24 01                               ;     acc = 1
+  0b
+  0c 00                                       ;   continue
+0b
+0b
+
+; func 3: _start
+30 00
+41 00 41 08 36 02 00                          ; [0] = 8   (read iovec)
+41 04 41 01 36 02 00                          ; [4] = 1
+10 02                                         ; assemble
+41 10 41 80 08 36 02 00                       ; [16] = 1024 (write iovec)
+41 14 23 00 41 80 08 6b 36 02 00              ; [20] = out - 1024
+41 01 41 10 41 01 41 18 10 01 1a              ; fd_write(1, 16, 1, 24); drop
+0b
