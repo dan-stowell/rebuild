@@ -26,8 +26,8 @@ first step) is `seed/seed.wasm`, which is exactly the bytes written out in
 | compiler (sx → wasm) | `stage1/compiler.hex`, 593 lines of annotated hex | 3197 bytes |
 | runtime (wasm interpreter) | `stage2/runtime.sx`, 580 lines of sx | 7455 bytes |
 
-Of the seed's 353 bytes, 134 are unavoidable module structure (the WASI
-import names alone are 70); the code is 219.
+Of the seed's 353 bytes, 130 are module structure (the WASI import
+section alone is 70); the code section is 223.
 
 `tools/` holds dev-only helpers; nothing in the bootstrap chain uses them.
 
