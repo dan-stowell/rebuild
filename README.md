@@ -3,7 +3,7 @@
 Bootstrapping a WebAssembly runtime from a tiny hand-written wasm seed.
 
 ```
-seed/seed.wasm   (419 bytes, hand-written hex assembler)
+seed/seed.wasm   (372 bytes, hand-written hex assembler)
    │  assembles
    ▼
 compiler.wasm    (3.2 KB, from stage1/compiler.hex: a compiler for "sx", a tiny s-expression language)
