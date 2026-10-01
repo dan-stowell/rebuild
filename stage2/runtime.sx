@@ -1,0 +1,580 @@
+; runtime.sx -- a WebAssembly interpreter, written in sx (see stage1/compiler.hex).
+;
+; stdin: the length of the guest module in decimal, a newline, the module's
+; bytes, and then whatever the guest itself reads from stdin.
+;
+; Supports the i32 subset of wasm 1.0 (all control flow, calls, call_indirect,
+; tables, globals, memory, the i32 loads/stores/arithmetic) plus
+; memory.copy / memory.fill, and the WASI calls fd_read, fd_write and
+; proc_exit.  Anything else stops with an "unsupported" message.
+
+(const IOVS 512)               ; translated iovecs for WASI calls (64 max)
+
+(global heap 0x10000)          ; bump allocator
+(global pc 0)                  ; the byte we are reading (module or code)
+(global sp 0)                  ; value stack pointer
+(global csp 0)                 ; control (label) stack pointer
+(global vlimit 0)
+(global cstack 0)
+(global cslimit 0)
+(global halted 0)              ; set by proc_exit(0)
+
+(global mod 0)                 ; the module's bytes
+(global modlen 0)
+(global secs 0)                ; section id -> start, end
+(global types 0)               ; 8 bytes each: nparams, nresults
+(global funcs 0)               ; 32 bytes each, see FN_*
+(global nfuncs 0)
+(global nimports 0)
+(global globals 0)             ; 4 bytes each
+(global table 0)               ; 4 bytes each: function index or -1
+(global tablesize 0)
+(global mem 0)                 ; guest memory; always the last allocation
+(global msize 0)             ; in bytes
+(global memmax 65536)          ; in pages
+(global side 0)                ; per code byte: matching end, else
+(global startfn -1)
+(global mainfn -1)
+(global bparams 0)             ; set by blocktype
+(global bresults 0)
+
+(const FN_TYPE 0)
+(const FN_HOST 4)              ; 0 = defined here; else a host function id
+(const FN_CODE 8)              ; first instruction
+(const FN_END 12)              ; end of body
+(const FN_NLOCALS 16)          ; locals, not counting params
+(const FN_NPARAMS 20)
+(const FN_NRESULTS 24)
+(const FN_NAME 28)             ; import name: length byte then text
+
+; ---------------------------------------------------------------- utilities
+
+(fn strlen (s) (n) (while (load8 (+ s n)) (set n (+ n 1))) n)
+
+(fn write (fd p n) () (store 0 p) (store 4 n) (fd_write fd 0 1 8))
+
+(fn puts (s) () (write 2 s (strlen s)))
+
+(fn puthex (v) (i d)
+  (store8 16 48) (store8 17 120)
+  (while (< i 8)
+    (set d (& (>>u v (- 28 (<< i 2))) 15))
+    (store8 (+ 18 i) (+ d (if (< d 10) 48 87)))
+    (set i (+ i 1)))
+  (write 2 16 10))
+
+(fn die (msg v) ()
+  (puts "runtime: ") (puts msg) (puts " ") (puthex v) (puts "\n")
+  (trap))
+
+(fn streq (p n s) (i)
+  (if (!= n (strlen s)) (return 0))
+  (while (<u i n)
+    (if (!= (load8 (+ p i)) (load8 (+ s i))) (return 0))
+    (set i (+ i 1)))
+  1)
+
+(fn move (dst src n) ()
+  (if (<u dst src)
+    (while n
+      (store8 dst (load8 src))
+      (set dst (+ dst 1)) (set src (+ src 1)) (set n (- n 1)))
+    (while n
+      (set n (- n 1))
+      (store8 (+ dst n) (load8 (+ src n))))))
+
+(fn alloc (n) (p have)
+  (set p heap)
+  (set heap (& (+ heap (+ n 7)) -8))
+  (set have (<< (memsize) 16))
+  (if (>u heap have)
+    (if (< (memgrow (+ (>>u (- heap have) 16) 1)) 0) (die "out of memory" n)))
+  p)
+
+; ------------------------------------------------------------------- input
+
+(fn readn (buf n) (got r)
+  (while (<u got n)
+    (store 0 (+ buf got)) (store 4 (- n got))
+    (fd_read 0 0 1 8)
+    (set r (load 8))
+    (if (= r 0) (die "unexpected end of input" got))
+    (set got (+ got r)))
+  got)
+
+(fn readlen () (n c)
+  (while (!= (do (readn 12 1) (set c (load8 12))) 10)
+    (if (<u (- c 48) 10) (set n (+ (* n 10) (- c 48)))))
+  n)
+
+(fn u8 () (b) (set b (load8 pc)) (set pc (+ pc 1)) b)
+
+(fn uleb () (r s b)
+  (set b 128)
+  (while (& b 128)
+    (set b (u8))
+    (set r (| r (<< (& b 127) s)))
+    (set s (+ s 7)))
+  r)
+
+(fn sleb () (r s b)
+  (set b 128)
+  (while (& b 128)
+    (set b (u8))
+    (set r (| r (<< (& b 127) s)))
+    (set s (+ s 7)))
+  (if (& (< s 32) (!= (& b 64) 0)) (set r (| r (<< -1 s))))
+  r)
+
+; ----------------------------------------------------------------- parsing
+
+(fn sec (id) () (set pc (load (+ secs (<< id 3)))) pc)
+
+(fn peek (id) () (if (sec id) (uleb) 0))
+
+(fn fn-entry (f) () (+ funcs (<< f 5)))
+
+(fn settype (e t) ()
+  (store (+ e FN_TYPE) t)
+  (store (+ e FN_NPARAMS) (load (+ types (<< t 3))))
+  (store (+ e FN_NRESULTS) (load (+ types (+ (<< t 3) 4)))))
+
+(fn constexpr () (op v)
+  (set op (u8))
+  (if (= op 0x41) (set v (sleb))
+    (if (= op 0x23) (set v (load (+ globals (<< (uleb) 2))))
+      (die "unsupported constant expression" op)))
+  (if (!= (u8) 0x0b) (die "bad constant expression" op))
+  v)
+
+(fn parse-types () (n i np nr)
+  (set n (uleb))
+  (set types (alloc (<< n 3)))
+  (while (<u i n)
+    (u8)
+    (set np (uleb)) (set pc (+ pc np))
+    (set nr (uleb)) (set pc (+ pc nr))
+    (store (+ types (<< i 3)) np)
+    (store (+ types (+ (<< i 3) 4)) nr)
+    (set i (+ i 1))))
+
+(fn hostid (p n) ()
+  (if (streq p n "fd_read") 1
+    (if (streq p n "fd_write") 2
+      (if (streq p n "proc_exit") 3 99))))
+
+(fn parse-imports () (n l p e kind)
+  (set n (uleb))
+  (while n
+    (set l (uleb)) (set pc (+ pc l))           ; module name
+    (set l (uleb)) (set p pc) (set pc (+ pc l)) ; field name
+    (set kind (u8))
+    (if (!= kind 0) (die "unsupported import kind" kind))
+    (set e (fn-entry nimports))
+    (settype e (uleb))
+    (store (+ e FN_HOST) (hostid p l))
+    (store (+ e FN_NAME) (- p 1))
+    (set nimports (+ nimports 1))
+    (set n (- n 1)))
+  (set nfuncs nimports))
+
+(fn parse-funcs () (n i)
+  (set n (uleb))
+  (while (<u i n)
+    (settype (fn-entry (+ nimports i)) (uleb))
+    (set i (+ i 1)))
+  (set nfuncs (+ nimports n)))
+
+(fn parse-table () (n flags i)
+  (set n (uleb))
+  (if (>u n 1) (die "too many tables" n))
+  (if n (do
+    (u8)
+    (set flags (u8))
+    (set tablesize (uleb))
+    (if (& flags 1) (uleb))
+    (set table (alloc (<< tablesize 2)))
+    (while (<u i tablesize) (store (+ table (<< i 2)) -1) (set i (+ i 1))))))
+
+(fn parse-memory () (n flags min)
+  (set n (uleb))
+  (if n (do
+    (set flags (u8))
+    (set min (uleb))
+    (if (& flags 1) (set memmax (uleb)))
+    (set msize (<< min 16)))))
+
+(fn parse-globals () (n i)
+  (set n (uleb))
+  (set globals (alloc (<< n 2)))
+  (while (<u i n)
+    (u8) (u8)
+    (store (+ globals (<< i 2)) (constexpr))
+    (set i (+ i 1))))
+
+(fn parse-exports () (n l p kind idx)
+  (set n (uleb))
+  (while n
+    (set l (uleb)) (set p pc) (set pc (+ pc l))
+    (set kind (u8))
+    (set idx (uleb))
+    (if (& (= kind 0) (streq p l "_start")) (set mainfn idx))
+    (set n (- n 1))))
+
+(fn parse-elems () (n off m f)
+  (set n (uleb))
+  (while n
+    (if (uleb) (die "unsupported element segment" 0))
+    (set off (constexpr))
+    (set m (uleb))
+    (while m
+      (set f (uleb))
+      (if (>=u off tablesize) (die "element segment out of bounds" off))
+      (store (+ table (<< off 2)) f)
+      (set off (+ off 1))
+      (set m (- m 1)))
+    (set n (- n 1))))
+
+(fn sideof (p) () (+ side (<< (- p mod) 3)))
+
+; skip the immediates of instruction op
+(fn skipimm (op) (n)
+  (if (| (& (>=u op 0x20) (<=u op 0x26))
+         (| (= op 0x0c) (| (= op 0x0d) (| (= op 0x10) (| (= op 0x3f) (| (= op 0x40) (= op 0xd2)))))))
+    (return (uleb)))
+  (if (| (= op 0x11) (& (>=u op 0x28) (<=u op 0x3e))) (return (do (uleb) (uleb))))
+  (if (| (= op 0x41) (= op 0x42)) (return (uleb)))
+  (if (= op 0x43) (return (set pc (+ pc 4))))
+  (if (= op 0x44) (return (set pc (+ pc 8))))
+  (if (= op 0xd0) (return (u8)))
+  (if (= op 0x1c) (return (set pc (+ pc (uleb)))))
+  (if (= op 0x0e) (do (set n (+ (uleb) 1)) (while n (uleb) (set n (- n 1))) (return 0)))
+  (if (= op 0xfc) (do
+    (set n (uleb))
+    (if (= n 8) (return (do (uleb) (u8))))
+    (if (= n 10) (return (do (u8) (u8))))
+    (if (| (= n 12) (= n 14)) (return (do (uleb) (uleb))))
+    (if (>=u n 9) (return (uleb)))))
+  0)
+
+; record, for each block/loop/if in [start, end), where its end (and else) is
+(fn scan (end) (op t)
+  (set t cstack)
+  (while (<u pc end)
+    (set op (u8))
+    (if (& (>=u op 2) (<=u op 4))
+      (do (store t (- pc 1)) (set t (+ t 4)) (sleb))
+      (if (= op 5)
+        (store (+ (sideof (load (- t 4))) 4) (- pc 1))
+        (if (= op 0x0b)
+          (if (>u t cstack) (do (set t (- t 4)) (store (sideof (load t)) (- pc 1))))
+          (skipimm op))))))
+
+(fn parse-code () (n i e size end m nl)
+  (set n (uleb))
+  (while (<u i n)
+    (set size (uleb))
+    (set end (+ pc size))
+    (set e (fn-entry (+ nimports i)))
+    (set m (uleb))
+    (set nl 0)
+    (while m (set nl (+ nl (uleb))) (u8) (set m (- m 1)))
+    (store (+ e FN_NLOCALS) nl)
+    (store (+ e FN_CODE) pc)
+    (store (+ e FN_END) end)
+    (scan end)
+    (set pc end)
+    (set i (+ i 1))))
+
+(fn chk (a n) ()
+  (if (| (>u (+ a n) msize) (<u (+ a n) a)) (die "out of bounds memory access" a)))
+
+(fn parse-data () (n flags off len)
+  (set n (uleb))
+  (while n
+    (set flags (uleb))
+    (if (= flags 1)
+      (do (set len (uleb)) (set pc (+ pc len)))
+      (do
+        (if flags (die "unsupported data segment" flags))
+        (set off (constexpr))
+        (set len (uleb))
+        (chk off len)
+        (move (+ mem off) pc len)
+        (set pc (+ pc len))))
+    (set n (- n 1))))
+
+(fn parse () (id size)
+  (if (!= (load mod) 0x6d736100) (die "not a wasm module" (load mod)))
+  (set secs (alloc 128))
+  (set pc (+ mod 8))
+  (while (<u pc (+ mod modlen))
+    (set id (u8))
+    (set size (uleb))
+    (if (>u id 12) (die "bad section id" id))
+    (store (+ secs (<< id 3)) pc)
+    (set pc (+ pc size)))
+  (set funcs (alloc (<< (+ (peek 2) (peek 3)) 5)))
+  (if (sec 1) (parse-types))
+  (if (sec 2) (parse-imports))
+  (if (sec 3) (parse-funcs))
+  (if (sec 4) (parse-table))
+  (if (sec 5) (parse-memory))
+  (if (sec 6) (parse-globals))
+  (if (sec 7) (parse-exports))
+  (if (sec 8) (set startfn (uleb)))
+  (if (sec 9) (parse-elems))
+  (set side (alloc (<< modlen 3)))
+  (if (sec 10) (parse-code))
+  (set mem (alloc msize))
+  (if (sec 11) (parse-data)))
+
+; --------------------------------------------------------------- execution
+
+(fn push (v) () (store sp v) (set sp (+ sp 4)))
+
+(fn pop () () (set sp (- sp 4)) (load sp))
+
+(fn label (arity target height loop) ()
+  (store csp arity)
+  (store (+ csp 4) target)
+  (store (+ csp 8) height)
+  (store (+ csp 12) loop)
+  (set csp (+ csp 16)))
+
+(fn blocktype () (t)
+  (set t (sleb))
+  (if (= t -64) (do (set bparams 0) (set bresults 0))
+    (if (< t 0) (do (set bparams 0) (set bresults 1))
+      (do (set bparams (load (+ types (<< t 3))))
+          (set bresults (load (+ types (+ (<< t 3) 4))))))))
+
+; branch to the label n deep; returns 1 if that left the function
+(fn branch (n cb) (l ar h src)
+  (set l (- csp (<< (+ n 1) 4)))
+  (set ar (load l))
+  (set h (load (+ l 8)))
+  (set src (- sp (<< ar 2)))
+  (while ar
+    (store h (load src))
+    (set h (+ h 4)) (set src (+ src 4)) (set ar (- ar 1)))
+  (set sp h)
+  (set pc (load (+ l 4)))
+  (set csp (if (load (+ l 12)) (+ l 16) l))
+  (<=u csp cb))
+
+(fn grow (d) (old need)
+  (set old (>>u msize 16))
+  (if (>u d (- memmax old)) (return -1))
+  (set need (+ heap (<< d 16)))
+  (if (| (>=u d 0x10000) (<u need heap)) (return -1))
+  (if (>u need (<< (memsize) 16))
+    (if (< (memgrow (+ (>>u (- need (<< (memsize) 16)) 16) 1)) 0) (return -1)))
+  (set heap need)
+  (set msize (+ msize (<< d 16)))
+  old)
+
+; effective address of a load/store: memarg at pc, address on the stack
+(fn ea (size) (a)
+  (uleb)
+  (set a (+ (load (- sp 4)) (uleb)))
+  (chk a size)
+  (+ mem a))
+
+(fn memop (op) (v)
+  (if (= op 0x28) (return (store (- sp 4) (load (ea 4)))))
+  (if (= op 0x36) (return (do (set v (pop)) (store (ea 4) v) (pop))))
+  (if (= op 0x2d) (return (store (- sp 4) (load8 (ea 1)))))
+  (if (= op 0x3a) (return (do (set v (pop)) (store8 (ea 1) v) (pop))))
+  (if (= op 0x2c) (return (store (- sp 4) (load8s (ea 1)))))
+  (if (= op 0x2f) (return (store (- sp 4) (load16 (ea 2)))))
+  (if (= op 0x2e) (return (store (- sp 4) (load16s (ea 2)))))
+  (if (= op 0x3b) (return (do (set v (pop)) (store16 (ea 2) v) (pop))))
+  (if (= op 0x3f) (return (do (uleb) (push (>>u msize 16)))))
+  (if (= op 0x40) (return (do (uleb) (store (- sp 4) (grow (load (- sp 4)))))))
+  (die "unsupported opcode" op))
+
+(fn misc () (sub d s n)
+  (set sub (uleb))
+  (if (= sub 10) (return (do
+    (u8) (u8)
+    (set n (pop)) (set s (pop)) (set d (pop))
+    (chk d n) (chk s n)
+    (move (+ mem d) (+ mem s) n))))
+  (if (= sub 11) (return (do
+    (u8)
+    (set n (pop)) (set s (pop)) (set d (pop))
+    (chk d n)
+    (set d (+ mem d))
+    (while n (store8 d s) (set d (+ d 1)) (set n (- n 1))))))
+  (die "unsupported opcode 0xfc" sub))
+
+(fn numeric (op) (a b)
+  (if (>u op 0x78) (if (= op 0xfc) (return (misc)) (die "unsupported opcode" op)))
+  (if (= op 0x45) (return (store (- sp 4) (not (load (- sp 4))))))
+  (if (& (>=u op 0x67) (<=u op 0x69)) (return (do
+    (set a (load (- sp 4)))
+    (store (- sp 4) (if (= op 0x67) (clz a) (if (= op 0x68) (ctz a) (popcnt a)))))))
+  (if (& (>u op 0x4f) (<u op 0x6a)) (die "unsupported opcode" op))
+  (set b (pop))
+  (set a (load (- sp 4)))
+  (store (- sp 4)
+    (if (<u op 0x6a)
+      (if (= op 0x46) (= a b)
+      (if (= op 0x47) (!= a b)
+      (if (= op 0x48) (< a b)
+      (if (= op 0x49) (<u a b)
+      (if (= op 0x4a) (> a b)
+      (if (= op 0x4b) (>u a b)
+      (if (= op 0x4c) (<= a b)
+      (if (= op 0x4d) (<=u a b)
+      (if (= op 0x4e) (>= a b)
+        (>=u a b))))))))))
+      (if (= op 0x6a) (+ a b)
+      (if (= op 0x6b) (- a b)
+      (if (= op 0x71) (& a b)
+      (if (= op 0x6c) (* a b)
+      (if (= op 0x74) (<< a b)
+      (if (= op 0x76) (>>u a b)
+      (if (= op 0x72) (| a b)
+      (if (= op 0x73) (^ a b)
+      (if (= op 0x75) (>> a b)
+      (if (= op 0x6d) (/ a b)
+      (if (= op 0x6e) (/u a b)
+      (if (= op 0x6f) (% a b)
+      (if (= op 0x70) (%u a b)
+      (if (= op 0x77) (rotl a b)
+        (rotr a b))))))))))))))))))
+
+(fn wasi-io (id fd iovs n outp) (i p l)
+  (if (>u n 64) (set n 64))
+  (chk iovs (<< n 3))
+  (chk outp 4)
+  (while (<u i n)
+    (set p (load (+ mem (+ iovs (<< i 3)))))
+    (set l (load (+ mem (+ iovs (+ (<< i 3) 4)))))
+    (chk p l)
+    (store (+ IOVS (<< i 3)) (+ mem p))
+    (store (+ IOVS (+ (<< i 3) 4)) l)
+    (set i (+ i 1)))
+  (set i (if (= id 1) (fd_read fd IOVS n 8) (fd_write fd IOVS n 8)))
+  (store (+ mem outp) (load 8))
+  i)
+
+(fn host (id e) (a0 a1 a2 a3 r)
+  (set sp (- sp (<< (load (+ e FN_NPARAMS)) 2)))
+  (set a0 (load sp)) (set a1 (load (+ sp 4)))
+  (set a2 (load (+ sp 8))) (set a3 (load (+ sp 12)))
+  (if (<= id 2) (set r (wasi-io id a0 a1 a2 a3))
+    (if (= id 3) (do (if a0 (die "guest exited with code" a0)) (set halted 1))
+      (do (puts "runtime: unsupported import ")
+          (set r (load (+ e FN_NAME)))
+          (write 2 (+ r 1) (load8 r))
+          (die "" 0))))
+  (if (load (+ e FN_NRESULTS)) (push r)))
+
+(fn invoke (f) (e fp nl)
+  (if (>=u f nfuncs) (die "bad function index" f))
+  (set e (fn-entry f))
+  (if (load (+ e FN_HOST)) (return (host (load (+ e FN_HOST)) e)))
+  (set fp (- sp (<< (load (+ e FN_NPARAMS)) 2)))
+  (set nl (load (+ e FN_NLOCALS)))
+  (if (>u (+ sp (<< nl 2)) vlimit) (die "stack overflow" f))
+  (while nl (push 0) (set nl (- nl 1)))
+  (exec e fp))
+
+(fn exec (e fp) (op cb a b c n)
+  (set pc (load (+ e FN_CODE)))
+  (set cb csp)
+  (if (>u csp cslimit) (die "call stack overflow" 0))
+  (label (load (+ e FN_NRESULTS)) 0 fp 0)
+  (while 1
+    (set op (load8 pc))
+    (set pc (+ pc 1))
+    (if (= op 0x20) (push (load (+ fp (<< (uleb) 2))))
+    (if (= op 0x41) (push (sleb))
+    (if (>=u op 0x45) (numeric op)
+    (if (= op 0x21) (store (+ fp (<< (uleb) 2)) (pop))
+    (if (= op 0x22) (store (+ fp (<< (uleb) 2)) (load (- sp 4)))
+    (if (>=u op 0x28) (memop op)
+    (if (= op 0x0d) (do                                            ; br_if
+      (set n (uleb))
+      (if (pop) (if (branch n cb) (return 0))))
+    (if (= op 0x10) (do                                            ; call
+      (set n (uleb))
+      (set a pc) (invoke n) (set pc a)
+      (if halted (return 0)))
+    (if (= op 0x0b)                                                ; end
+      (if (= (- csp 16) cb) (do (branch 0 cb) (return 0))
+        (set csp (- csp 16)))
+    (if (= op 0x02) (do                                            ; block
+      (set a (- pc 1))
+      (blocktype)
+      (label bresults (+ (load (sideof a)) 1) (- sp (<< bparams 2)) 0))
+    (if (= op 0x03) (do                                            ; loop
+      (blocktype)
+      (label bparams pc (- sp (<< bparams 2)) 1))
+    (if (= op 0x04) (do                                            ; if
+      (set a (- pc 1))
+      (blocktype)
+      (set c (pop))
+      (set b (load (+ (sideof a) 4)))
+      (if (| c b)
+        (label bresults (+ (load (sideof a)) 1) (- sp (<< bparams 2)) 0))
+      (if (not c)
+        (set pc (+ (if b b (load (sideof a))) 1))))
+    (if (= op 0x05) (do                                            ; else
+      (set csp (- csp 16))
+      (set pc (load (+ csp 4))))
+    (if (= op 0x0c) (if (branch (uleb) cb) (return 0))             ; br
+    (if (= op 0x23) (push (load (+ globals (<< (uleb) 2))))        ; global.get
+    (if (= op 0x24) (store (+ globals (<< (uleb) 2)) (pop))        ; global.set
+    (if (= op 0x1a) (pop)                                          ; drop
+    (if (= op 0x0f) (do                                            ; return
+      (branch (- (>>u (- csp cb) 4) 1) cb)
+      (return 0))
+    (if (= op 0x0e) (do                                            ; br_table
+      (set n (uleb))
+      (set b (pop))
+      (set c 0)
+      (while (<=u c n)
+        (set a (uleb))
+        (if (| (= c b) (& (= c n) (>=u b n))) (set op a))
+        (set c (+ c 1)))
+      (if (branch op cb) (return 0)))
+    (if (= op 0x11) (do                                            ; call_indirect
+      (set n (uleb))
+      (uleb)
+      (set b (pop))
+      (if (>=u b tablesize) (die "undefined element" b))
+      (set c (load (+ table (<< b 2))))
+      (if (= c -1) (die "uninitialized element" b))
+      (if (| (!= (load (+ (fn-entry c) FN_NPARAMS)) (load (+ types (<< n 3))))
+             (!= (load (+ (fn-entry c) FN_NRESULTS)) (load (+ types (+ (<< n 3) 4)))))
+        (die "indirect call type mismatch" c))
+      (set a pc) (invoke c) (set pc a)
+      (if halted (return 0)))
+    (if (| (= op 0x1b) (= op 0x1c)) (do                            ; select
+      (if (= op 0x1c) (set pc (+ pc (+ (uleb) 0))))
+      (set c (pop))
+      (set b (pop))
+      (if (not c) (store (- sp 4) b)))
+    (if (= op 0x01) 0                                              ; nop
+    (if (= op 0x00) (die "unreachable" 0)
+      (die "unsupported opcode" op))))))))))))))))))))))))))
+
+; -------------------------------------------------------------------- main
+
+(fn main () ()
+  (set modlen (readlen))
+  (set mod (alloc modlen))
+  (readn mod modlen)
+  (set sp (alloc 0x40000))
+  (set vlimit (+ sp 0x3f000))
+  (set cstack (alloc 0x10000))
+  (set cslimit (+ cstack 0xf000))
+  (set csp cstack)
+  (parse)
+  (if (>= startfn 0) (invoke startfn))
+  (if (& (not halted) (>= mainfn 0)) (invoke mainfn))
+  0)

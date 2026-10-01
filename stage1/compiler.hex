@@ -377,6 +377,7 @@
 
 ; pass 1: collect functions, globals and constants
 41 80 80 10 24 00                          ; pos = source
+41 80 80 0c 24 07                          ; dcur = string data
 02 40 03 40
   10 02 23 02 45 0d 01                     ; '(' or eof
   10 02                                    ; head
