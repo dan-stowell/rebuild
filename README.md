@@ -20,6 +20,15 @@ first step) is `seed/seed.wasm`, which is exactly the bytes written out in
 `seed/seed.hex` — and assembling `seed.hex` with `seed.wasm` reproduces
 `seed.wasm`.
 
+| stage | source | binary |
+|---|---|---|
+| seed (hex assembler) | `seed/seed.hex` (hand-written wasm) | **353 bytes** |
+| compiler (sx → wasm) | `stage1/compiler.hex`, 593 lines of annotated hex | 3197 bytes |
+| runtime (wasm interpreter) | `stage2/runtime.sx`, 580 lines of sx | 7455 bytes |
+
+Of the seed's 353 bytes, 134 are unavoidable module structure (the WASI
+import names alone are 70); the code is 219.
+
 `tools/` holds dev-only helpers; nothing in the bootstrap chain uses them.
 
 ## Running it
