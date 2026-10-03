@@ -17,6 +17,13 @@ check out/t3 seed/seed.wasm "runtime runs seed on seed.hex"
 check out/t4 out/compiler.wasm "runtime runs seed on compiler.hex"
 ./run.sh out/compiler.wasm < stage2/runtime.sx > out/t5 || true
 check out/t5 out/runtime.wasm "runtime runs compiler on runtime.sx"
+cat c/libc.c c/cc.c | $RUN out/cc.wasm > out/t7 || true
+check out/t7 out/cc.wasm "C compiler compiles itself to a fixed point"
+cat c/libc.c c/cc.c | ./run.sh out/cc.wasm > out/t8 || true
+check out/t8 out/cc.wasm "runtime runs the C compiler on itself"
+cat c/libc.c c/tests/basic.c | $RUN out/cc.wasm > out/basic.wasm
+$RUN out/basic.wasm > out/t9 || true
+check out/t9 c/tests/basic.out "C test program"
 if [ "$1" = "--slow" ]; then
   { wc -c < out/compiler.wasm; cat out/compiler.wasm stage2/runtime.sx; } |
     ./run.sh out/runtime.wasm > out/t6 || true

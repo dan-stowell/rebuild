@@ -13,6 +13,11 @@ runtime.wasm     (7.5 KB, from stage2/runtime.sx: a WebAssembly interpreter)
    │  runs
    ▼
 any (supported) .wasm program — including seed.wasm, compiler.wasm and runtime.wasm itself
+
+compiler.wasm also compiles c/cc.sx → cc0.wasm (11 KB, bootstrap C compiler)
+   │  compiles c/cc.c (a C-subset compiler written in that subset)
+   ▼
+cc.wasm          (18 KB; compiles itself to a fixed point; see c/README.md)
 ```
 
 The only binary you have to trust (besides the host runtime that runs the
@@ -25,6 +30,8 @@ first step) is `seed/seed.wasm`, which is exactly the bytes written out in
 | seed (hex assembler) | `seed/seed.hex` (hand-written wasm) | **353 bytes** |
 | compiler (sx → wasm) | `stage1/compiler.hex`, 593 lines of annotated hex | 3197 bytes |
 | runtime (wasm interpreter) | `stage2/runtime.sx`, 580 lines of sx | 7455 bytes |
+| bootstrap C compiler | `c/cc.sx`, a transcription of `cc.c` into sx | 11415 bytes |
+| C compiler | `c/cc.c`, ~800 lines of the C subset | 18047 bytes |
 
 Of the seed's 353 bytes, 130 are module structure (the WASI import
 section alone is 70); the code section is 223.
