@@ -619,11 +619,28 @@ int lib_error(int clo, int base, int nargs) {
   return 0;
 }
 /* pcall cannot catch errors here (an error stops the program), but a
- * call that succeeds behaves as it should */
+ * call that succeeds behaves as it should.  The one error it does catch
+ * is the common probe for an optional module, pcall(require, name). */
+int requirefn; int preload; int loaded;
 int lib_pcall(int clo, int base, int nargs) {
-  int n = lcall(arg(base, nargs, 0), base + 1, nargs - 1);
+  int n; int name;
+  if (nargs >= 2 && stk[base] == requirefn && isstr(stk[base + 1])) {
+    name = stk[base + 1];
+    if (tget(loaded, name) == NIL && tget(preload, name) == NIL) {
+      stk[base] = FALSE;
+      sbn = 0;
+      sbputs("module '", 8); sbputs(sptr(name), sl(name)); sbputs("' not found", 11);
+      stk[base + 1] = sbstr();
+      return 2;
+    }
+  }
+  n = lcall(arg(base, nargs, 0), base + 1, nargs - 1);
   stk[base] = TRUE;
   return n + 1;
+}
+int lib_load(int clo, int base, int nargs) {
+  lerror("load: only constant strings can be loaded (they are compiled ahead of time)");
+  return 0;
 }
 int lib_unpack(int clo, int base, int nargs) {
   int t = arg(base, nargs, 0); int i = optint(base, nargs, 1, 1, "unpack");
@@ -933,6 +950,19 @@ int lib_exit(int clo, int base, int nargs) {
   return 0;
 }
 
+/* require: modules are bundled ahead of time into package.preload */
+int lib_require(int clo, int base, int nargs) {
+  int name = checkstr(base, nargs, 0, "require"); int v = tget(loaded, name); int f; int n;
+  if (v != NIL) return ret1(base, v);
+  f = tget(preload, name);
+  if (f == NIL) lerror3("module '", sptr(name), "' not found (bundle it: lua/bundle.sh)");
+  top = base + nargs;
+  n = lcall(f, base, 1);
+  v = n && stk[base] != NIL ? stk[base] : TRUE;
+  if (tget(loaded, name) == NIL) tset(loaded, name, v);
+  return ret1(base, tget(loaded, name));
+}
+
 void reg(int t, char *name, int fn) { tset(t, cstr(name), mkclo(fn, 0)); }
 int lib(char *name) { int t = newtable(); tset(globals, cstr(name), t); return t; }
 
@@ -949,7 +979,7 @@ void lua_init() {
   reg(globals, "select", lib_select); reg(globals, "rawget", lib_rawget); reg(globals, "rawset", lib_rawset);
   reg(globals, "rawequal", lib_rawequal); reg(globals, "rawlen", lib_rawlen);
   reg(globals, "setmetatable", lib_setmetatable); reg(globals, "getmetatable", lib_getmetatable);
-  reg(globals, "assert", lib_assert); reg(globals, "error", lib_error); reg(globals, "pcall", lib_pcall);
+  reg(globals, "assert", lib_assert); reg(globals, "error", lib_error); reg(globals, "pcall", lib_pcall); reg(globals, "load", lib_load);
   nextfn = tget(globals, cstr("next"));
   ipairsfn = mkclo(lib_ipairs_iter, 0);
   strlib = t = lib("string");
@@ -966,6 +996,11 @@ void lua_init() {
   tset(t, cstr("maxinteger"), mkint(1073741823)); tset(t, cstr("mininteger"), mkint(-1073741824));
   t = lib("io");
   reg(t, "write", lib_write); reg(t, "read", lib_read);
+  t = lib("package");
+  preload = newtable(); loaded = newtable();
+  tset(t, cstr("preload"), preload); tset(t, cstr("loaded"), loaded);
+  reg(globals, "require", lib_require);
+  requirefn = tget(globals, cstr("require"));
   t = lib("os");
   reg(t, "exit", lib_exit);
 }

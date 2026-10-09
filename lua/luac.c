@@ -54,8 +54,9 @@ char pool[MAXPOOL]; int npool;     /* names and string contents */
 int tk[MAXTOK]; int tv[MAXTOK]; int tl[MAXTOK]; int tline[MAXTOK]; int ntok;
 int tp;
 
+int lexing; int line;   /* the lexer's current line */
 void die2(char *a, char *b) {
-  eputs("luac: line "); eputs(numstr(tline[tp])); eputs(": "); eputs(a); eputs(b); eputs("\n");
+  eputs("luac: line "); eputs(numstr(lexing ? line : tline[tp])); eputs(": "); eputs(a); eputs(b); eputs("\n");
   __builtin_trap();
 }
 void die(char *msg) { die2(msg, ""); }
@@ -91,7 +92,6 @@ int longlevel(int i) {
   return -1;
 }
 /* read a long string at i with level n into the pool; returns the new i */
-int line;   /* the lexer's current line */
 int longstring(int i, int n, int keep) {
   int j;
   i = i + n + 2;
@@ -155,9 +155,10 @@ int quoted(int i, int q) {
   return i + 1;
 }
 
-void lex() {
-  int i = 0; int c; int k; int v; int n; int big;
-  line = 1;
+/* tokenize src from i; the tokens (and an X_EOF) are appended */
+void lex(int i) {
+  int c; int k; int v; int n; int big;
+  line = 1; lexing = 1;
   while (1) {
     c = src[i];
     if (!c) break;
@@ -216,6 +217,8 @@ void lex() {
     ntok++;
   }
   tk[ntok] = X_EOF; tline[ntok] = line;
+  ntok++;
+  lexing = 0;
 }
 
 int accept(int t) { if (tk[tp] == t) { tp++; return 1; } return 0; }
@@ -421,20 +424,51 @@ void callargs(int f, int self) {
   dk = E_CALL; da = b; db = n;
 }
 
-void singlevar(int tok) {
-  int i = nact - 1; int p = tv[tok]; int n = tl[tok];
+int findlocal(int p, int n) {
+  int i = nact - 1;
   while (i >= 0) {
-    if (alen[i] == n && same(pool + aname[i], pool + p, n)) break;
+    if (alen[i] == n && same(pool + aname[i], pool + p, n)) return i;
     i--;
   }
+  return -1;
+}
+
+void singlevar(int tok) {
+  int p = tv[tok]; int n = tl[tok]; int i = findlocal(p, n);
   if (i < 0) { dk = E_GLOBAL; da = kconst(p, n); return; }
   if (alv[i] == fl) { dk = E_LOCAL; da = ac[i]; db = iscapt(i); return; }
   captured[adecl[i]] = 1;
   dk = E_UPVAL; da = upval(fl, i);
 }
 
+/* load "constant code" is compiled ahead of time: the string's tokens
+ * are appended to the token list, once, and compiled as a function */
+int sublex[MAXTOK];
+int loadconst() {
+  int s = -1; int next; int save; int i; int f;
+  if (tl[tp] != 4 || !same(pool + tv[tp], "load", 4) || findlocal(tv[tp], 4) >= 0) return 0;
+  if (tk[tp + 1] == X_STRING) { s = tp + 1; next = tp + 2; }
+  else if (tk[tp + 1] == '(' && tk[tp + 2] == X_STRING && tk[tp + 3] == ')') { s = tp + 2; next = tp + 4; }
+  if (s < 0) return 0;
+  if (!sublex[s]) {
+    if (srclen + tl[s] + 1 >= MAXSRC) die("out of source space");
+    for (i = 0; i < tl[s]; i++) src[srclen + i] = pool[tv[s] + i];
+    src[srclen + tl[s]] = 0;
+    sublex[s] = ntok;
+    lex(srclen);
+    srclen = srclen + tl[s] + 1;
+  }
+  save = next;
+  tp = sublex[s];
+  f = funcbody(2, 0);
+  tp = save;
+  dk = E_VAL; da = f;
+  return 1;
+}
+
 void primaryexp() {
   int t;
+  if (tk[tp] == X_NAME && loadconst()) return;
   if (tk[tp] == X_NAME) { singlevar(tp); tp++; return; }
   if (accept('(')) {
     expr();
@@ -819,14 +853,15 @@ int funcbody(int method, int line) {
   fl++;
   fnum[fl] = f; ntemp[fl] = 0; maxtemp[fl] = 0; nloc[fl] = 0; nup[fl] = 0;
   np[fl] = 0; isva[fl] = 0; llen[fl] = 0; loopdepth[fl] = 0;
-  if (method) {
+  if (method == 1) {
     a = nact; c = declare(selfname, 4);
     if (iscapt(a)) e1("%l = newcell(nargs > 0 ? stk[base] : 0);\n", c);
     else e1("%l = nargs > 0 ? stk[base] : 0;\n", c);
     np[fl]++;
   }
-  expect('(', "'('");
-  if (!accept(')')) {
+  if (method == 2) isva[fl] = 1;   /* a chunk, from load */
+  else expect('(', "'('");
+  if (method != 2 && !accept(')')) {
     do {
       if (accept(X_DOTS)) { isva[fl] = 1; break; }
       n = checkname();
@@ -838,7 +873,7 @@ int funcbody(int method, int line) {
     expect(')', "')'");
   }
   block();
-  expect(X_END, "'end'");
+  if (method == 2) expect(X_EOF, "end of chunk"); else expect(X_END, "'end'");
   e0("return 0;\n");
   /* the C function: header, declarations, body */
   if (gen) {
@@ -896,7 +931,8 @@ int main() {
   int n; int i;
   while ((n = sys_read(src + srclen, MAXSRC - 1 - srclen)) > 0) srclen = srclen + n;
   src[srclen] = 0;
-  lex();
+  srclen++;
+  lex(0);
   selfname = npool;
   poolc('s'); poolc('e'); poolc('l'); poolc('f');
   gen = 0; chunk();   /* pass one: which locals are captured */

@@ -9,6 +9,17 @@ C; `lrt.c` is the runtime it links against (by concatenation).  There is no
 interpreter and no garbage collector: programs are compiled ahead of time,
 run once, and their memory is thrown away with them.
 
+## The corpus
+
+`lua/corpus.sh` compiles and runs a corpus of unmodified Lua programs and
+compares their output with Lua 5.4's.  Multi-file programs are bundled
+ahead of time (`lua/bundle.sh`: modules go into `package.preload`).
+
+Currently **9 / 14** of the "Are We Fast Yet?" benchmarks pass.  All five
+failures are about numbers: four need floats (`cd`, `nbody`, and `/` in
+`deltablue` and `richards`), one needs integers wider than 31 bits
+(`havlak`).
+
 ## What works
 
 Lua 5.4 syntax except `goto`; locals, upvalues and closures, varargs and
@@ -29,7 +40,9 @@ byte char find format}`, `table.{insert remove concat sort unpack}`,
 - **No garbage collection.**  Memory only grows.  Building a long string
   with `s = s .. x` in a loop uses quadratic memory; use `table.concat`.
 - **Errors end the program** (exit status 1).  `pcall` works for calls that
-  succeed but cannot catch an error.
-- No `goto`, coroutines, string patterns (only plain `find`), `load`,
-  `require`, `os`/`io` beyond the above, or `__add`-style arithmetic
+  succeed but cannot catch an error, except the common probe for an
+  optional module, `pcall(require, name)`.
+- `load` only of a constant string, which is compiled ahead of time.
+  `require` only of bundled modules.
+- No `goto`, coroutines, string patterns (only plain `find`), `os`/`io` beyond the above, or `__add`-style arithmetic
   metamethods yet.
