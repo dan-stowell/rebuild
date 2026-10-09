@@ -24,6 +24,11 @@ check out/t8 out/cc.wasm "runtime runs the C compiler on itself"
 cat c/libc.c c/tests/basic.c | $RUN out/cc.wasm > out/basic.wasm
 $RUN out/basic.wasm > out/t9 || true
 check out/t9 c/tests/basic.out "C test program"
+for t in fnptr; do
+  cat c/libc.c c/tests/$t.c | $RUN out/cc.wasm > out/$t.wasm
+  ./run.sh out/$t.wasm < /dev/null > out/t10 || true
+  check out/t10 c/tests/$t.out "C test $t (on our runtime)"
+done
 if [ "$1" = "--slow" ]; then
   { wc -c < out/compiler.wasm; cat out/compiler.wasm stage2/runtime.sx; } |
     ./run.sh out/runtime.wasm > out/t6 || true

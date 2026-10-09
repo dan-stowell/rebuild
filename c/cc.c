@@ -87,6 +87,13 @@ int keyword(int p, int n) {
   return T_ID;
 }
 
+int hexval(int c) {
+  if (isdig(c)) return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 int escape(int c) {
   if (c == 'n') return 10;
   if (c == 't') return 9;
@@ -126,11 +133,8 @@ void lex() {
       if (c == '0' && (src[i + 1] == 'x' || src[i + 1] == 'X')) {
         i = i + 2;
         while (1) {
-          c = src[i];
-          if (isdig(c)) v = v * 16 + c - '0';
-          else if (c >= 'a' && c <= 'f') v = v * 16 + c - 'a' + 10;
-          else if (c >= 'A' && c <= 'F') v = v * 16 + c - 'A' + 10;
-          else break;
+          if (hexval(src[i]) < 0) break;
+          v = v * 16 + hexval(src[i]);
           i++;
         }
       } else {
@@ -153,7 +157,10 @@ void lex() {
       while (src[i] != '"') {
         if (!src[i]) die("unterminated string");
         c = src[i++];
-        if (c == '\\') c = escape(src[i++]);
+        if (c == '\\' && src[i] == 'x') {
+          c = hexval(src[i + 1]) * 16 + hexval(src[i + 2]);
+          i = i + 3;
+        } else if (c == '\\') c = escape(src[i++]);
         data[datalen++] = c;
       }
       i++;
@@ -214,7 +221,7 @@ void emit3(int a, int b, int c) { emit(a); emit(b); emit(c); }
 void iconst(int v) { emit(0x41); sleb(v); }
 
 /* relocations: patched once function indices and memory layout are known */
-enum { R_FUNC = 1, R_BSS, R_HEAP };
+enum { R_FUNC = 1, R_BSS, R_HEAP, R_TYPE };
 int rpos[MAXREL]; int rkind[MAXREL]; int rval[MAXREL];
 int nrel;
 void reloc(int kind, int v) {
@@ -254,6 +261,7 @@ int fname[MAXFN]; int fnlen[MAXFN]; int fnp[MAXFN]; int fret[MAXFN];
 int fdef[MAXFN]; int ford[MAXFN]; int fimp[MAXFN]; int byord[MAXFN];
 int nfn; int ndef; int nimp;
 int mainf = -1;
+int usetable;        /* functions are used as values: emit a table */
 
 int bsslen;
 
@@ -309,6 +317,23 @@ int expr();
 int assign();
 int cexpr();
 
+/* the value of symbol s (sets lv) */
+int var(int s) {
+  lv = 0;
+  if (skind[s] == S_CONST) { iconst(sval[s]); return TY_INT; }
+  if (skind[s] == S_LOCAL) { lv = 1; lvi = sval[s]; return stype[s]; }
+  if (skind[s] == S_FUNC) {   /* a function's value is its table index */
+    emit(0x41); reloc(R_FUNC, sval[s]);
+    usetable = 1;
+    return TY_INT;
+  }
+  emit(0x41);
+  if (sbss[s]) reloc(R_BSS, sval[s]); else sleb(sval[s]);
+  if (sarr[s]) return stype[s] + 4;
+  lv = 2;
+  return stype[s];
+}
+
 int call(int p, int n) {
   int s; int f; int np = 0; int t;
   if (nameis(p, n, "__builtin_trap")) { expect('('); expect(')'); emit(0); return TY_VOID; }
@@ -318,6 +343,20 @@ int call(int p, int n) {
   }
   if (nameis(p, n, "__heap_base")) { expect('('); expect(')'); emit(0x41); reloc(R_HEAP, 0); return TY_CHAR + 4; }
   s = lookup(p, n);
+  if (s >= 0 && (skind[s] == S_LOCAL || skind[s] == S_GLOBAL)) {
+    /* call through a function pointer held in an int: call_indirect,
+       with every parameter and the result an int */
+    expect('(');
+    if (!accept(')')) {
+      do { t = assign(); rv(t); np++; } while (accept(','));
+      expect(')');
+    }
+    rv(var(s));
+    emit(0x11); reloc(R_TYPE, np); emit(0);
+    usetable = 1;
+    lv = 0;
+    return TY_INT;
+  }
   if (s < 0 || skind[s] != S_FUNC) die("call of undeclared function");
   f = sval[s];
   expect('(');
@@ -342,14 +381,7 @@ int primary() {
   if (tk[tp] == '(') return call(p, n);
   s = lookup(p, n);
   if (s < 0) die("undeclared identifier");
-  if (skind[s] == S_CONST) { iconst(sval[s]); return TY_INT; }
-  if (skind[s] == S_LOCAL) { lv = 1; lvi = sval[s]; return stype[s]; }
-  if (skind[s] != S_GLOBAL) die("not a variable");
-  emit(0x41);
-  if (sbss[s]) reloc(R_BSS, sval[s]); else sleb(sval[s]);
-  if (sarr[s]) return stype[s] + 4;
-  lv = 2;
-  return stype[s];
+  return var(s);
 }
 
 /* ++x, --x, x++, x-- */
@@ -770,6 +802,7 @@ void finish() {
     v = rval[i];
     if (rkind[i] == R_FUNC) v = fdef[v] ? nimp + ford[v] : fimp[v];
     else if (rkind[i] == R_BSS) v = bss + v;
+    else if (rkind[i] == R_TYPE) v = nfn + 1 + v;
     else v = heap;
     patch5(code, rpos[i], v);
   }
@@ -778,7 +811,7 @@ void finish() {
   emit(0); emit(0x61); emit(0x73); emit(0x6d); emit(1); emit(0); emit(0); emit(0);
   /* types: one per function, in function index order, then _start */
   s = section(1);
-  uleb(nfn + 1);
+  uleb(nfn + 10);
   for (i = 0; i < nfn + 1; i++) {
     if (i == nfn) { emit3(0x60, 0, 0); continue; }
     f = i < nimp ? -1 : byord[i - nimp];
@@ -786,6 +819,11 @@ void finish() {
     emit(0x60); uleb(fnp[f]);
     for (v = 0; v < fnp[f]; v++) emit(0x7f);
     if (fret[f] == TY_VOID) emit(0); else emit2(1, 0x7f);
+  }
+  for (i = 0; i <= 8; i++) {   /* for call_indirect: (int * i) -> int */
+    emit(0x60); uleb(i);
+    for (v = 0; v < i; v++) emit(0x7f);
+    emit2(1, 0x7f);
   }
   endsection(s);
   s = section(2);
@@ -801,6 +839,11 @@ void finish() {
   uleb(ndef + 1);
   for (i = 0; i <= ndef; i++) uleb(nimp + i);
   endsection(s);
+  if (usetable) {    /* table slot i holds function i */
+    s = section(4);
+    emit3(1, 0x70, 0); uleb(nimp + ndef);
+    endsection(s);
+  }
   s = section(5);
   emit2(1, 0); uleb(heap / 65536 + 1);
   endsection(s);
@@ -809,6 +852,13 @@ void finish() {
   name("memory", 6); emit2(2, 0);
   name("_start", 6); emit(0); uleb(nimp + ndef);
   endsection(s);
+  if (usetable) {
+    s = section(9);
+    emit2(1, 0); iconst(0); emit(0x0b);
+    uleb(nimp + ndef);
+    for (i = 0; i < nimp + ndef; i++) uleb(i);
+    endsection(s);
+  }
   s = section(10);
   uleb(ndef + 1);
   for (i = 0; i < clen; i++) emit(code[i]);

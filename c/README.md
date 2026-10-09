@@ -23,6 +23,10 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
   bitwise and shift operators, `?:`, assignment and compound assignment,
   `++`/`--`, `*`, `&` (of memory, not of locals), `[]`, calls, casts,
   `sizeof(type)`, character and string literals.
+- Function pointers, wasm style: a function's name used as a value is an
+  `int` (its table index), and calling an `int` variable, `f(a, b)`, is an
+  indirect call with int parameters and an int result.  (Not valid C.)
+- String escapes: `\n \t \r \0 \xHH`, and any other character as itself.
 - Builtins: `__builtin_trap()`, `__memory_size()`, `__memory_grow(n)`,
   `__heap_base()`.
 - Ignored: `#` lines (so `#include` is harmless), comments.
