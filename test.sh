@@ -29,6 +29,10 @@ for t in fnptr; do
   ./run.sh out/$t.wasm < /dev/null > out/t10 || true
   check out/t10 c/tests/$t.out "C test $t (on our runtime)"
 done
+for t in lua/tests/*.lua; do
+  lua/run.sh $t > out/t11 2>&1 || true
+  check out/t11 ${t%.lua}.out "Lua test $(basename $t)"
+done
 if [ "$1" = "--slow" ]; then
   { wc -c < out/compiler.wasm; cat out/compiler.wasm stage2/runtime.sx; } |
     ./run.sh out/runtime.wasm > out/t6 || true

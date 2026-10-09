@@ -9,4 +9,5 @@ $RUN out/compiler.wasm   < stage2/runtime.sx   > out/runtime.wasm   # sx -> wasm
 $RUN out/compiler.wasm   < c/cc.sx             > out/cc0.wasm       # sx -> bootstrap C compiler
 cat c/libc.c c/cc.c | $RUN out/cc0.wasm        > out/cc1.wasm       # C compiler, built by cc0
 cat c/libc.c c/cc.c | $RUN out/cc1.wasm        > out/cc.wasm        # ... and by itself
+cat c/libc.c lua/luac.c | $RUN out/cc.wasm     > out/luac.wasm      # Lua -> C compiler
 ls -l out/*.wasm
