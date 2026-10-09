@@ -15,28 +15,30 @@ run once, and their memory is thrown away with them.
 compares their output with Lua 5.4's.  Multi-file programs are bundled
 ahead of time (`lua/bundle.sh`: modules go into `package.preload`).
 
-Currently **9 / 14** of the "Are We Fast Yet?" benchmarks pass.  All five
-failures are about numbers: four need floats (`cd`, `nbody`, and `/` in
-`deltablue` and `richards`), one needs integers wider than 31 bits
-(`havlak`).
+All **14 / 14** of the "Are We Fast Yet?" benchmarks pass.
 
 ## What works
 
 Lua 5.4 syntax except `goto`; locals, upvalues and closures, varargs and
 multiple results, integer `for` and generic `for`, tables with an array
-part, metatables with `__index`, `__newindex`, `__call`, `__tostring` and
-`__len`; method calls on strings.  Library: `print type tostring tonumber
+part, metatables with `__index`, `__newindex`, `__call`, `__tostring`, `__len`,
+`__eq`, `__lt`, `__le`, `__concat` and the arithmetic metamethods; method calls on strings.  Library: `print type tostring tonumber
 pairs ipairs next select rawget rawset rawequal rawlen setmetatable
 getmetatable assert error pcall`, `string.{len sub upper lower rep reverse
 byte char find format}`, `table.{insert remove concat sort unpack}`,
-`math.{abs max min floor ceil tointeger type fmod maxinteger mininteger}`,
+`math.{abs max min floor ceil sqrt exp log tointeger type fmod modf ult
+pi huge maxinteger mininteger}`,
 `io.{write read}`, `os.exit`.
 
 ## The sharp edges
 
-- **Integers only, and 31-bit.**  A value is one 32-bit word; integers are
-  tagged in the low bit.  No floats: `/` and `^` stop the program, float
-  literals are rejected.  Overflow wraps at 31 bits, not 64.
+- **Numbers are Lua 5.4's**: 64-bit integers and doubles.  A value is one
+  64-bit word: doubles are NaN-boxed (offset by 2^48), integers within 48
+  bits are stored inline and wider ones are interned boxes.  Conversions
+  between doubles and decimal are exact (`num.c`), so `print` and
+  `string.format` match C's and Lua's output digit for digit.  `exp` and
+  `log` (and so `x ^ y` for fractional `y`) are accurate to about an ulp
+  but not correctly rounded.
 - **No garbage collection.**  Memory only grows.  Building a long string
   with `s = s .. x` in a loop uses quadratic memory; use `table.concat`.
 - **Errors end the program** (exit status 1).  `pcall` works for calls that
@@ -44,5 +46,5 @@ byte char find format}`, `table.{insert remove concat sort unpack}`,
   optional module, `pcall(require, name)`.
 - `load` only of a constant string, which is compiled ahead of time.
   `require` only of bundled modules.
-- No `goto`, coroutines, string patterns (only plain `find`), `os`/`io` beyond the above, or `__add`-style arithmetic
-  metamethods yet.
+- No `goto`, coroutines, string patterns (only plain `find`), trigonometry,
+  `math.random`, `os`/`io` beyond the above, yet.

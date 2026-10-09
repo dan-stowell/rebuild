@@ -963,9 +963,11 @@ void global(int t, int p, int n) {
   if (accept('=')) {
     if (len) die("array initializers are not supported");
     hi = 0;
+    a = tk[tp] == '-' && tk[tp + 1] == T_NUM;   /* a literal, maybe negated, of any size */
     if (tk[tp] == T_STR) { lo = tv[tp]; tp++; }
-    else if (tk[tp] == T_NUM && tk[tp + 1] != '+' && tk[tp + 1] != '-' && prec(tk[tp + 1]) == 0) {
-      lo = tv[tp]; hi = th[tp]; tp++;
+    else if (tk[tp + a] == T_NUM && prec(tk[tp + a + 1]) == 0) {
+      lo = tv[tp + a]; hi = th[tp + a]; tp = tp + a + 1;
+      if (a) { lo = -lo; hi = ~hi + (lo == 0); }
     } else { lo = cexpr(); hi = lo < 0 ? -1 : 0; }
     if (t == TY_DOUBLE && (lo || hi)) die("double initializers must be 0");
     a = tsize(t);

@@ -5,7 +5,7 @@ D=$(cd "$(dirname "$0")/.." && pwd)
 RUN=${RUN:-wasmtime}
 T=${TMPDIR:-/tmp}/luarun.$$
 $RUN "$D/out/luac.wasm" < "$1" > $T.c
-cat "$D/c/libc.c" "$D/lua/lrt.c" $T.c | $RUN "$D/out/cc.wasm" > $T.wasm
+cat "$D/c/libc.c" "$D/lua/num.c" "$D/lua/lrt.c" $T.c | $RUN "$D/out/cc.wasm" > $T.wasm
 rm -f $T.c
 $RUN $T.wasm; s=$?
 rm -f $T.wasm

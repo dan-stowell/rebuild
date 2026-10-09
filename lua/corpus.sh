@@ -19,7 +19,7 @@ runcase() {
   total=$((total + 1))
   why=""
   if ! $RUN out/luac.wasm < $T.lua > $T.c 2> $T.err; then why=$(grep -m1 . $T.err)
-  elif ! cat c/libc.c lua/lrt.c $T.c | $RUN out/cc.wasm > $T.wasm 2> $T.err; then why="cc: $(grep -m1 . $T.err)"
+  elif ! cat c/libc.c lua/num.c lua/lrt.c $T.c | $RUN out/cc.wasm > $T.wasm 2> $T.err; then why="cc: $(grep -m1 . $T.err)"
   else
     timeout 60 $RUN $T.wasm > $T.out 2> $T.err
     if cmp -s $T.out $exp; then pass=$((pass + 1)); echo "pass  $name"; return

@@ -4,10 +4,10 @@
  *   cat c/libc.c lua/lrt.c prog.c | cc > prog.wasm
  *
  * Every Lua function becomes a C function  int Fn(int clo, int base,
- * int nargs)  (see lrt.c for the calling convention).  Expressions are
- * compiled to three-address C: each value lands in a temporary Tn.  Lua
- * locals become C locals Ln, or, if a closure captures them, Ln holds a
- * cell.  The source is parsed twice: the first pass only finds out which
+ * int nargs)  (see lrt.c for the calling convention and how values are
+ * represented).  Expressions are compiled to three-address C: each value
+ * lands in a temporary Tn.  Lua locals become C locals Ln, or, if a closure
+ * captures them, Ln holds a cell.  Needs num.c first.  The source is parsed twice: the first pass only finds out which
  * locals are captured, since that must be known where they are declared.
  */
 
@@ -27,15 +27,16 @@ int same(char *a, char *b, int n) {
   return 1;
 }
 void eputs(char *s) { sys_write(2, s, cstrlen(s)); }
-char nbuf[16];
-char *numstr(int n) {
-  int i = 15; int neg = n < 0;
+char nbuf[32];
+char *lnumstr(long n) {
+  int i = 31; int neg = n < 0; unsigned long u;
   nbuf[i] = 0;
-  if (neg) n = -n;
-  do { i--; nbuf[i] = '0' + n % 10; n = n / 10; } while (n);
+  u = neg ? -(unsigned long)n : (unsigned long)n;
+  do { i--; nbuf[i] = '0' + (int)(u % 10); u = u / 10; } while (u);
   if (neg) { i--; nbuf[i] = '-'; }
   return nbuf + i;
 }
+char *numstr(int n) { return lnumstr(n); }
 
 /* ---------------------------------------------------------------- lexer */
 
@@ -52,6 +53,8 @@ char *puncts = "...//==~=<=>=<<>>::";   /* ... first, then 2-char ones; .. is sp
 char src[MAXSRC]; int srclen;
 char pool[MAXPOOL]; int npool;     /* names and string contents */
 int tk[MAXTOK]; int tv[MAXTOK]; int tl[MAXTOK]; int tline[MAXTOK]; int ntok;
+long tn[MAXTOK];   /* a number's value, as an encoded Lua value (see lrt.c) */
+int tbig[MAXTOK];  /* an integer outside 48 bits: tn is the plain integer */
 int tp;
 
 int lexing; int line;   /* the lexer's current line */
@@ -155,6 +158,8 @@ int quoted(int i, int q) {
   return i + 1;
 }
 
+void numeral(int k, int i);
+
 /* tokenize src from i; the tokens (and an X_EOF) are appended */
 void lex(int i) {
   int c; int k; int v; int n; int big;
@@ -175,21 +180,10 @@ void lex(int i) {
     if (ntok >= MAXTOK - 1) die("too many tokens");
     tline[ntok] = line;
     if (isdig(c) || (c == '.' && isdig(src[i + 1]))) {
-      v = 0; big = 0;
-      tk[ntok] = X_INT;
-      if (c == '0' && (src[i + 1] == 'x' || src[i + 1] == 'X')) {
-        i = i + 2;
-        while (hexval(src[i]) >= 0) { if (v >= 0x4000000) big = 1; v = v * 16 + hexval(src[i]); i++; }
-        if (src[i] == '.' || src[i] == 'p' || src[i] == 'P') tk[ntok] = X_FLOAT;
-      } else {
-        while (isdig(src[i])) { if (v >= 107374182) big = 1; v = v * 10 + src[i] - '0'; i++; }
-        if (src[i] == '.' || src[i] == 'e' || src[i] == 'E') tk[ntok] = X_FLOAT;
-      }
+      k = i;
       while (isalpha_(src[i]) || isdig(src[i]) || src[i] == '.' ||
              ((src[i] == '-' || src[i] == '+') && (src[i - 1] == 'e' || src[i - 1] == 'E'))) i++;
-      if (v > 1073741823) big = 1;
-      if (big && tk[ntok] == X_INT) die("integer constant too large (integers are 31-bit here)");
-      tv[ntok] = v;
+      numeral(k, i);
     } else if (isalpha_(c)) {
       k = i;
       while (isalpha_(src[i]) || isdig(src[i])) i++;
@@ -219,6 +213,35 @@ void lex(int i) {
   tk[ntok] = X_EOF; tline[ntok] = line;
   ntok++;
   lexing = 0;
+}
+
+/* integers in 48 bits and floats are encoded in place; see lrt.c */
+long encint(long n) { return (n & 281474976710655L) | -281474976710656L; }
+long encdbl(double d) { return __f64_bits(d) + 281474976710656L; }
+int fits48(long n) { return ((n << 16) >> 16) == n; }
+
+/* the numeral src[k..i) */
+void numeral(int k, int i) {
+  unsigned long v = 0; int over = 0; int j = k; double d; int hex = 0;
+  if (src[k] == '0' && (src[k + 1] == 'x' || src[k + 1] == 'X')) {
+    hex = 1; j = k + 2;
+    while (j < i && hexval(src[j]) >= 0) { v = v * 16 + hexval(src[j]); j++; }   /* wraps */
+    if (j < i) die("hexadecimal floats are not supported");
+  } else {
+    while (j < i && isdig(src[j])) {
+      if (v > 922337203685477580UL || (v == 922337203685477580UL && src[j] > '7')) over = 1;
+      v = v * 10 + src[j] - '0'; j++;
+    }
+  }
+  tk[ntok] = X_INT; tbig[ntok] = 0;
+  if (!hex && (j < i || over)) {   /* a float (also an integer that does not fit) */
+    d = str2dbl(src + k, i - k);
+    if (!numok) die("malformed number");
+    tk[ntok] = X_FLOAT; tn[ntok] = encdbl(d);
+    return;
+  }
+  if (fits48((long)v)) tn[ntok] = encint((long)v);
+  else { tn[ntok] = (long)v; tbig[ntok] = 1; }
 }
 
 int accept(int t) { if (tk[tp] == t) { tp++; return 1; } return 0; }
@@ -527,7 +550,10 @@ int constructor() {
       if (i && dk == E_CALL) { e3("tappend(%t, %t, %t, ", t, da, db); e1("%d);\n", n + 1); }
       else if (i && dk == E_VARARG) {
         e3("tappend(%t, base + %d, nargs - %d, ", t, np[fl], np[fl]); e1("%d);\n", n + 1);
-      } else { v = single(); n++; e3("tset(%t, %d, %t);\n", t, 2 * n + 1, v); }
+      } else {
+        v = single(); n++;
+        e1("tset(%t, ", t); puts_(lnumstr(encint(n))); e1("L, %t);\n", v);
+      }
     }
     if (!accept(',') && !accept(';')) break;
   }
@@ -536,10 +562,28 @@ int constructor() {
   return t;
 }
 
+/* a numeric constant into a temp */
+int numconst(int i, int neg) {
+  int r = newtemp(); long v = tn[i]; double d;
+  if (tk[i] == X_FLOAT) {
+    if (neg) v = v ^ (-9223372036854775807L - 1);
+  } else if (!tbig[i]) {
+    v = (v << 16) >> 16;   /* decode */
+    if (neg) v = -v;
+    if (fits48(v)) v = encint(v);
+    else { e1("%t = mkint(", r); puts_(lnumstr(v)); puts_("L);\n"); return r; }
+  } else {
+    if (neg) v = -v;
+    if (fits48(v)) v = encint(v);
+    else { e1("%t = mkint(", r); puts_(lnumstr(v)); puts_("L);\n"); return r; }
+  }
+  e1("%t = ", r); puts_(lnumstr(v)); puts_("L;\n");
+  return r;
+}
+
 void simpleexp() {
   int t = tk[tp]; int r;
-  if (t == X_INT) { tp++; r = newtemp(); e2("%t = %d;\n", r, 2 * tv[tp - 1] + 1); dk = E_VAL; da = r; return; }
-  if (t == X_FLOAT) die("floating-point numbers are not supported");
+  if (t == X_INT || t == X_FLOAT) { tp++; r = numconst(tp - 1, 0); dk = E_VAL; da = r; return; }
   if (t == X_STRING) {
     tp++; r = newtemp(); e2("%t = K[%d];\n", r, kconst(tv[tp - 1], tl[tp - 1]));
     dk = E_VAL; da = r; return;
@@ -596,9 +640,9 @@ void subexpr(int limit) {
   else if (op == '~') f = "lbnot";
   if (f) {
     tp++;
-    if (op == '-' && tk[tp] == X_INT && lprio(tk[tp + 1]) <= 12 && tk[tp + 1] != '^') {
+    if (op == '-' && (tk[tp] == X_INT || tk[tp] == X_FLOAT) && lprio(tk[tp + 1]) <= 12 && tk[tp + 1] != '^') {
       /* a negative constant */
-      tp++; t = newtemp(); e2("%t = %d;\n", t, 1 - 2 * tv[tp - 1]);
+      tp++; t = numconst(tp - 1, 1);
       dk = E_VAL; da = t;
     } else {
       subexpr(12);
@@ -736,16 +780,21 @@ void forstat(int line) {
     expr(); a = single(); expect(',', "','");
     expr(); b = single();
     if (accept(',')) { expr(); c = single(); }
-    else { c = newtemp(); e1("%t = 3;\n", c); }
+    else { c = newtemp(); e1("%t = ", c); puts_(lnumstr(encint(1))); puts_("L;\n"); }
     expect(X_DO, "'do'");
-    i = newtemp();
-    e3("forprep(%t, %t, %t);\n", a, b, c);
-    e2("%t = %t;\n", i, a);
-    ef("while (%t > 1 ? %t <= %t : %t >= ", c, i, b, i); e1("%t) {\n", b);
+    /* f: run at all; i: the variable; cnt: iterations left (-1: a float
+       loop); s: the step; ctl: the limit (float loops) */
+    f = newtemp(); i = newtemp(); cnt = newtemp(); s = newtemp(); ctl = newtemp();
+    ef("%t = forprep(%t, %t, %t);\n", f, a, b, c);
+    ef("%t = for_i; %t = for_n; %t = for_s; %t = for_l;\n", i, cnt, s, ctl);
+    e1("while (%t & -3) {\n", f);
     v = nact; declare(tv[n], tl[n]);
     if (iscapt(v)) e2("%l = newcell(%t);\n", ac[v], i); else e2("%l = %t;\n", ac[v], i);
     block();
-    e3("%t = %t + %t - 1;\n", i, i, c);
+    ef("if (%t >= 0) { if (%t == 0) break; %t = %t - 1; ", cnt, cnt, cnt, cnt);
+    e3("%t = forstep(%t, %t); }\n", i, i, s);
+    e0("else { ");
+    ef("%t = fornextf(%t, %t, %t); ", i, i, ctl, s); e1("if (!%t) break; }\n", i);
     e0("}\n");
   } else {
     first = ntg;
@@ -879,8 +928,8 @@ int funcbody(int method, int line) {
   if (gen) {
     fput("\nint F"); fput(numstr(f)); fput("(int clo, int base, int nargs) {\n");
     fput("top = base + nargs;\n");
-    for (i = 0; i < maxtemp[fl]; i++) { fput("int T"); fput(numstr(i)); fput(";\n"); }
-    for (i = 0; i < nloc[fl]; i++) { fput("int L"); fput(numstr(i)); fput(";\n"); }
+    for (i = 0; i < maxtemp[fl]; i++) { fput("long T"); fput(numstr(i)); fput(";\n"); }
+    for (i = 0; i < nloc[fl]; i++) { fput("long L"); fput(numstr(i)); fput(";\n"); }
     fputs_(lbuf + fl * LBUF, llen[fl]);
     fput("}\n");
   }
@@ -908,8 +957,8 @@ void chunk() {
   if (gen) {
     fput("\nint F0(int clo, int base, int nargs) {\n");
     fput("top = base + nargs;\n");
-    for (i = 0; i < maxtemp[0]; i++) { fput("int T"); fput(numstr(i)); fput(";\n"); }
-    for (i = 0; i < nloc[0]; i++) { fput("int L"); fput(numstr(i)); fput(";\n"); }
+    for (i = 0; i < maxtemp[0]; i++) { fput("long T"); fput(numstr(i)); fput(";\n"); }
+    for (i = 0; i < nloc[0]; i++) { fput("long L"); fput(numstr(i)); fput(";\n"); }
     fputs_(lbuf, llen[0]);
     fput("}\n");
   }
@@ -941,7 +990,7 @@ int main() {
   for (i = 0; i < nk; i++) kstring(i);
   fput("}\n");
   n = 0;
-  sys_write(1, "int K[", 6);
+  sys_write(1, "long K[", 7);
   sys_write(1, numstr(nk + 1), cstrlen(numstr(nk + 1)));
   sys_write(1, "];\n", 3);
   while (n < fout_n) n = n + sys_write(1, fout + n, fout_n - n);
