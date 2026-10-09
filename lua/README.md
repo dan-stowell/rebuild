@@ -1,11 +1,12 @@
 # Lua, compiled ahead of time to wasm
 
 ```
-lua/run.sh prog.lua        # luac.wasm: Lua -> C;  cc.wasm: C (+ lrt.c) -> wasm;  run
+lua/run.sh prog.lua   # luac.wasm: Lua -> C;  cc.wasm: C + num.c + lrt.c -> wasm;  run
 ```
 
 `luac.c` (written in the C subset, built by `cc`) turns a Lua program into
-C; `lrt.c` is the runtime it links against (by concatenation).  There is no
+C; `lrt.c` is the runtime it links against (by concatenation), and `num.c`
+the exact conversions between doubles and decimal that both share.  There is no
 interpreter and no garbage collector: programs are compiled ahead of time,
 run once, and their memory is thrown away with them.
 
@@ -46,5 +47,5 @@ pi huge maxinteger mininteger}`,
   optional module, `pcall(require, name)`.
 - `load` only of a constant string, which is compiled ahead of time.
   `require` only of bundled modules.
-- No `goto`, coroutines, string patterns (only plain `find`), trigonometry,
-  `math.random`, `os`/`io` beyond the above, yet.
+- Not yet: `goto`, coroutines, string patterns (only plain `find`),
+  trigonometry, `math.random`, and `os`/`io` beyond the above.

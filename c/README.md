@@ -58,4 +58,6 @@ its tokens.  Function indices and the addresses of zero-initialized globals
 are written as padded LEB128s and patched at the end.  `main` is called by
 a generated `_start`; a nonzero result traps.
 
-`native.c` lets gcc build `cc.c` too — a dev convenience only.
+`native.c` lets gcc build these programs too, for comparing output — a
+dev convenience only.  `wasm.c` is a WebAssembly interpreter written in
+the subset.
