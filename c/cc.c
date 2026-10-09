@@ -45,7 +45,7 @@ enum {
   T_EOF = 256, T_NUM, T_STR, T_ID,
   T_INT, T_CHAR, T_VOID, T_IF, T_ELSE, T_WHILE, T_FOR, T_DO, T_RETURN,
   T_BREAK, T_CONTINUE, T_SIZEOF, T_ENUM, T_STATIC, T_CONST,
-  T_UNSIGNED, T_SIGNED, T_LONG, T_DOUBLE,
+  T_UNSIGNED, T_SIGNED, T_LONG, T_DOUBLE, T_SWITCH, T_CASE, T_DEFAULT,
   T_EQ, T_NE, T_LE, T_GE, T_AND, T_OR, T_INC, T_DEC, T_SHL, T_SHR,
   T_ADDA, T_SUBA, T_MULA, T_DIVA, T_MODA, T_ANDA, T_ORA, T_XORA,
   T_SHLA, T_SHRA
@@ -55,7 +55,7 @@ enum {
 enum { TY_VOID, TY_CHAR, TY_UCHAR, TY_INT, TY_UINT, TY_LONG, TY_ULONG, TY_DOUBLE, PTR };
 
 char *keywords =
-  "int char void if else while for do return break continue sizeof enum static const unsigned signed long double ";
+  "int char void if else while for do return break continue sizeof enum static const unsigned signed long double switch case default ";
 char *puncts = "==!=<=>=&&||++--<<>>+=-=*=/=%=&=|=^=";
 
 char src[MAXSRC];
@@ -843,6 +843,86 @@ void decl() {
   expect(';');
 }
 
+void stmt();
+
+/* skip from an opening token to just past its matching closing one */
+void skipbal(int open, int close) {
+  int d = 0;
+  do {
+    if (tk[tp] == open) d++;
+    if (tk[tp] == close) d--;
+    if (tk[tp] == T_EOF) die("unbalanced brackets");
+    tp++;
+  } while (d);
+}
+
+/* switch: the case labels are found first by reading ahead, then
+ * dispatched with br_table (or a chain of br_ifs if they are sparse) to
+ * nested blocks, one per label, in which the code falls through */
+enum { MAXCASE = 4096 };
+int casev[MAXCASE]; int casedef[MAXCASE]; int ncase;
+void switchstmt() {
+  int first = ncase; int n; int i; int j; int d = 0; int save; int min = 0; int max = 0;
+  int miss; int ncv = 0; int t; int ob = brk; int v;
+  expect('('); t = expr(); rv(t); conv(t, TY_INT); expect(')');
+  lset(tmpk);
+  if (tk[tp] != '{') die("expected a block after switch");
+  save = tp;
+  while (1) {
+    if (tk[tp] == T_EOF) die("unterminated switch");
+    if (tk[tp] == T_SWITCH) { tp++; skipbal('(', ')'); skipbal('{', '}'); continue; }
+    if (tk[tp] == '{') d++;
+    if (tk[tp] == '}') { d--; if (!d) break; }
+    if (d == 1 && (tk[tp] == T_CASE || tk[tp] == T_DEFAULT)) {
+      if (ncase >= MAXCASE) die("too many cases");
+      casedef[ncase] = tk[tp] == T_DEFAULT;
+      tp++;
+      casev[ncase] = casedef[ncase] ? 0 : cexpr();
+      if (!casedef[ncase]) {
+        if (!ncv || casev[ncase] < min) min = casev[ncase];
+        if (!ncv || casev[ncase] > max) max = casev[ncase];
+        ncv++;
+      }
+      ncase++;
+      continue;
+    }
+    tp++;
+  }
+  tp = save;
+  n = ncase - first;
+  miss = n;   /* where an unmatched value goes: the default, or past the end */
+  for (i = 0; i < n; i++) if (casedef[first + i]) miss = i;
+  emit2(0x02, 0x40); depth++; brk = depth;
+  for (i = 0; i < n; i++) { emit2(0x02, 0x40); depth++; }
+  if (ncv && max - min >= 0 && max - min < 4 * ncv + 64) {
+    lget(tmpk); iconst(min); emit(0x6b);
+    emit(0x0e); uleb(max - min + 1);
+    for (v = min; v <= max; v++) {
+      j = miss;
+      for (i = n - 1; i >= 0; i--) if (!casedef[first + i] && casev[first + i] == v) j = i;
+      uleb(j);
+    }
+    uleb(miss);
+  } else {
+    for (i = 0; i < n; i++) {
+      if (casedef[first + i]) continue;
+      lget(tmpk); iconst(casev[first + i]); emit(0x46); emit(0x0d); uleb(i);
+    }
+    emit(0x0c); uleb(miss);
+  }
+  expect('{');
+  save = nsym;
+  while (!accept('}')) {
+    if (accept(T_CASE)) { cexpr(); expect(':'); emit(0x0b); depth--; continue; }
+    if (accept(T_DEFAULT)) { expect(':'); emit(0x0b); depth--; continue; }
+    if (istype(tp)) decl(); else stmt();
+  }
+  nsym = save;
+  emit(0x0b); depth--;
+  brk = ob;
+  ncase = first;
+}
+
 void stmt() {
   int t; int save; int ob = brk; int oc = cont; int top; int step; int n;
   if (accept('{')) {
@@ -897,6 +977,8 @@ void stmt() {
   } else if (accept(T_RETURN)) {
     if (!accept(';')) { t = expr(); rv(t); conv(t, curret); expect(';'); }
     emit(0x0f);
+  } else if (accept(T_SWITCH)) {
+    switchstmt();
   } else if (accept(T_BREAK)) {
     expect(';'); emit(0x0c); uleb(depth - brk);
   } else if (accept(T_CONTINUE)) {

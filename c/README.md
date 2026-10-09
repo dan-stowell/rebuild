@@ -21,7 +21,8 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
   expression, or a string literal for a `char *`).  Locals are scalars.
 - `enum { A, B = 5 }` constants; constant expressions in array sizes.
 - Functions with up to 16 parameters; prototypes.
-- Statements: blocks, `if`/`else`, `while`, `do`/`while`, `for`, `break`,
+- Statements: blocks, `if`/`else`, `while`, `do`/`while`, `for`, `switch`
+  (compiled to `br_table` when the cases are dense), `break`,
   `continue`, `return`, expression statements.
 - Expressions: all of C's arithmetic, comparison, logical (short-circuit),
   bitwise and shift operators, `?:`, assignment and compound assignment,
@@ -38,7 +39,7 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
   WASI import.
 - Ignored: `#` lines (so `#include` is harmless), comments.
 
-Not (yet): structs, unions, local arrays, `&local`, `switch`, `goto`,
+Not (yet): structs, unions, local arrays, `&local`, `goto`,
 `float`, `short`, floating-point literals, initializer lists, the
 preprocessor.
 
