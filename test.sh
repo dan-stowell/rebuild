@@ -18,7 +18,7 @@ w out/compiler.wasm < c/cc.sx > out/t;      check out/t out/cc0.wasm "sx compile
 cat c/libc.c c/cc.c | $RUN out/cc.wasm > out/t; check out/t out/cc.wasm "C compiler: fixed point"
 cat c/libc.c c/cc.c | w out/cc.wasm > out/t;    check out/t out/cc.wasm "  ... on our interpreter"
 cat c/libc.c c/wasm.c | w out/cc.wasm > out/t;  check out/t out/wasm.wasm "interpreter compiles itself (interpreted)"
-cat c/libc.c lua/num.c lua/luac.c | w out/cc.wasm > out/t; check out/t out/luac.wasm "luac (interpreted)"
+cat c/libc.c rt/num.c lua/luac.c | w out/cc.wasm > out/t; check out/t out/luac.wasm "luac (interpreted)"
 $RUN out/compiler.wasm < tests/hello.sx > out/hello.wasm
 w out/hello.wasm < /dev/null > out/t;       check out/t tests/hello.out "sx test program (interpreted)"
 for t in basic fnptr switch types tail; do
@@ -29,7 +29,7 @@ done
 for t in lua/tests/*.lua; do
   lua/run.sh $t > out/t 2>&1;               check out/t ${t%.lua}.out "Lua test $(basename $t)"
   w out/luac.wasm < $t > out/t.c
-  cat c/libc.c lua/num.c lua/lrt.c out/t.c | w out/cc.wasm > out/t.wasm
+  cat c/libc.c rt/num.c lua/lrt.c out/t.c | w out/cc.wasm > out/t.wasm
   w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.lua}.out "  ... entirely on our interpreter"
 done
 if [ "$1" = "--slow" ]; then

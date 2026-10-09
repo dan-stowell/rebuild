@@ -76,6 +76,11 @@ void die(char *msg) {
   eputs("cc: line "); eputnum(tline[tp]); eputs(": "); eputs(msg); eputs("\n");
   __builtin_trap();
 }
+void diename(char *msg, int p, int n) {   /* die, naming the identifier at src[p..p+n) */
+  eputs("cc: line "); eputnum(tline[tp]); eputs(": "); eputs(msg); eputs(": ");
+  sys_write(2, src + p, n); eputs("\n");
+  __builtin_trap();
+}
 
 int isdig(int c) { return c >= '0' && c <= '9'; }
 int isid(int c) {
@@ -586,7 +591,7 @@ int call(int p, int n) {
     lv = 0;
     return TY_INT;
   }
-  if (s < 0 || skind[s] != S_FUNC) die("call of undeclared function");
+  if (s < 0 || skind[s] != S_FUNC) diename("call of undeclared function", p, n);
   f = sval[s];
   expect('(');
   if (!accept(')')) {
@@ -621,7 +626,7 @@ int primary() {
   p = tv[tp]; n = tl[tp]; tp++;
   if (tk[tp] == '(') return call(p, n);
   s = lookup(p, n);
-  if (s < 0) die("undeclared identifier");
+  if (s < 0) diename("undeclared identifier", p, n);
   return var(s);
 }
 
@@ -1223,6 +1228,15 @@ void finish() {
   emit(0); iconst(DATA_BASE); emit(0x0b);
   uleb(datalen);
   for (i = 0; i < datalen; i++) emit(data[i]);
+  endsection(s);
+  /* function names, for backtraces */
+  s = section(0);
+  name("name", 4);
+  emit(1); v = olen; pad5(0);
+  uleb(nimp + ndef);
+  for (f = 0; f < nfn; f++) if (!fdef[f] && fused[f]) { uleb(fimp[f]); name(src + fname[f], fnlen[f]); }
+  for (i = 0; i < ndef; i++) { uleb(nimp + i); name(src + fname[byord[i]], fnlen[byord[i]]); }
+  patch5(out, v, olen - v - 5);
   endsection(s);
 }
 

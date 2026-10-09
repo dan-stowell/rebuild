@@ -9,5 +9,5 @@ $RUN out/compiler.wasm < c/cc.sx             > out/cc0.wasm           # sx -> bo
 cat c/libc.c c/cc.c     | $RUN out/cc0.wasm  > out/cc1.wasm           # the C compiler, by cc0
 cat c/libc.c c/cc.c     | $RUN out/cc1.wasm  > out/cc.wasm            # ... and by itself
 cat c/libc.c c/wasm.c   | $RUN out/cc.wasm   > out/wasm.wasm          # the wasm interpreter
-cat c/libc.c lua/num.c lua/luac.c | $RUN out/cc.wasm > out/luac.wasm  # Lua -> C compiler
+cat c/libc.c rt/num.c lua/luac.c | $RUN out/cc.wasm > out/luac.wasm  # Lua -> C compiler
 ls -l out/*.wasm
