@@ -10,13 +10,17 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
 
 ## The subset
 
-- Types: `int` (32-bit), `char` (signed, 8-bit in memory), `void`, and
-  pointers to these.  `static` and `const` are accepted and ignored.
+- Types: `char` (signed) and `unsigned char`, `int` and `unsigned` (32-bit),
+  `long` and `unsigned long` (64-bit, as are `long long`), `double`, `void`,
+  and pointers (32-bit).  The usual arithmetic conversions apply.  `static`,
+  `const` and `signed` are accepted and ignored.
+- Integer literals of any size (`1L`, `4000000000U`, ...).  No
+  floating-point literals yet: write `(double)3`, or
+  `__f64_from_bits(0x400921fb54442d18L)`.
 - Globals, including arrays (`int a[N]`) and scalar initializers (a constant
   expression, or a string literal for a `char *`).  Locals are scalars.
 - `enum { A, B = 5 }` constants; constant expressions in array sizes.
-- Functions with any number of parameters; prototypes.  A function that is
-  declared but never defined becomes a WASI import (`fd_read`, `fd_write`, ...).
+- Functions with up to 16 parameters; prototypes.
 - Statements: blocks, `if`/`else`, `while`, `do`/`while`, `for`, `break`,
   `continue`, `return`, expression statements.
 - Expressions: all of C's arithmetic, comparison, logical (short-circuit),
@@ -28,11 +32,15 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
   indirect call with int parameters and an int result.  (Not valid C.)
 - String escapes: `\n \t \r \0 \xHH`, and any other character as itself.
 - Builtins: `__builtin_trap()`, `__memory_size()`, `__memory_grow(n)`,
-  `__heap_base()`.
+  `__heap_base()`, `__f64_bits(d)` and `__f64_from_bits(l)` (reinterpret),
+  and `__builtin_{sqrt,floor,ceil,trunc,fabs}`.
+- A function that is declared but never defined, and is called, becomes a
+  WASI import.
 - Ignored: `#` lines (so `#include` is harmless), comments.
 
 Not (yet): structs, unions, local arrays, `&local`, `switch`, `goto`,
-`unsigned`, `long`, floating point, initializer lists, the preprocessor.
+`float`, `short`, floating-point literals, initializer lists, the
+preprocessor.
 
 There is no garbage collector and none is planned: `malloc` bumps a pointer
 and `free` does nothing, because these programs are short-lived.

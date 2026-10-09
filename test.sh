@@ -29,6 +29,9 @@ for t in fnptr; do
   ./run.sh out/$t.wasm < /dev/null > out/t10 || true
   check out/t10 c/tests/$t.out "C test $t (on our runtime)"
 done
+cat c/libc.c c/tests/types.c | $RUN out/cc.wasm > out/types.wasm
+$RUN out/types.wasm > out/t12 || true
+check out/t12 c/tests/types.out "C test types (long, double, unsigned)"
 for t in lua/tests/*.lua; do
   lua/run.sh $t > out/t11 2>&1 || true
   check out/t11 ${t%.lua}.out "Lua test $(basename $t)"
