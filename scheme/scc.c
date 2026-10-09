@@ -70,6 +70,7 @@ void synerr(char *msg, long form) {
   sys_write(2, sb, sbn);
   proc_exit(1);
 }
+long p_vec2list(long v) { long l = NULL; int i; for (i = vlen(v) - 1; i >= 0; i--) l = cons(velts(v)[i], l); return l; }
 long need(long x, long form) { if (!ispair(x)) synerr("bad syntax", form); return x; }
 
 /* ----------------------------------------------------- the symbol table */
@@ -182,23 +183,60 @@ long xref(int v) { vnref[v]++; return node(X_REF, v, 0, 0); }
 long xp(long x, long env);
 long xbody(long forms, long env);
 
-/* look a symbol up: mkint(variable), a macro, or FALSE if unbound */
-long lookup(long s, long env) {
+/* Macro expansion renames the symbols a template introduces: an alias
+ * remembers its original and the environment of the macro's definition,
+ * where it means what the original means unless the expansion binds it. */
+long akey[GSZ]; long aorig[GSZ]; long aenv[GSZ];
+int aslot(long s) {
+  int h = (int)((s >> 3) * 2654435761L) & (GSZ - 1);
+  while (akey[h] && akey[h] != s) h = (h + 1) & (GSZ - 1);
+  return h;
+}
+int isalias(long s) { return akey[aslot(s)] == s; }
+long unalias(long s) { while (issym(s) && isalias(s)) s = aorig[aslot(s)]; return s; }
+long envfind(long s, long env) {
   long f; long e;
   for (f = env; f != NULL; f = cdr(f))
     for (e = car(f); e != NULL; e = cdr(e))
       if (car(car(e)) == s) return cdr(car(e));
-  return gget(s);
+  return FALSE;
+}
+/* look a symbol up: mkint(variable), a macro, or FALSE if unbound */
+long lookup(long s, long env) {
+  long b; int h;
+  while (1) {
+    b = envfind(s, env);
+    if (b != FALSE) return b;
+    b = gget(s);
+    if (b != FALSE) return b;
+    if (!isalias(s)) return FALSE;
+    h = aslot(s); s = aorig[h]; env = aenv[h];
+  }
+  return FALSE;
 }
 int islocal(long s, long env) {
-  long f; long e;
-  for (f = env; f != NULL; f = cdr(f))
-    for (e = car(f); e != NULL; e = cdr(e))
-      if (car(car(e)) == s) return 1;
+  int h;
+  while (1) {
+    if (envfind(s, env) != FALSE) return 1;
+    if (gget(s) != FALSE || !isalias(s)) return 0;
+    h = aslot(s); s = aorig[h]; env = aenv[h];
+  }
   return 0;
 }
+/* the keyword s stands for, if it isn't a variable */
+long kwname(long s, long env) {
+  if (!issym(s) || islocal(s, env)) return FALSE;
+  return unalias(s);
+}
 /* is x a use of keyword k (not shadowed by a local variable)? */
-int iskw(long x, long k, long env) { return x == k && !islocal(k, env); }
+int iskw(long x, long k, long env) { return issym(x) && kwname(x, env) == k; }
+/* a quoted datum, with aliases back to their originals */
+long strip(long d) {
+  if (issym(d)) return unalias(d);
+  if (ispair(d)) return cons(strip(car(d)), strip(cdr(d)));
+  if (otype(d) == OVEC) return list2vec(strip(p_vec2list(d)));
+  return d;
+}
 int ismacro(long b) { return ispair(b); }
 
 long expandmacro(long m, long x, long env);
@@ -249,26 +287,25 @@ long xlambda(long formals, long body, long env, long name) {
 }
 
 /* quasiquote, into list operations */
-long p_vec2list(long v) { long l = NULL; int i; for (i = vlen(v) - 1; i >= 0; i--) l = cons(velts(v)[i], l); return l; }
 int hasunquote(long x, int depth) {
   int i;
   if (otype(x) == OVEC) { for (i = 0; i < vlen(x); i++) if (hasunquote(velts(x)[i], depth)) return 1; return 0; }
   if (!ispair(x)) return 0;
-  if (car(x) == S_unquote || car(x) == S_unqspl) { if (depth == 1) return 1; return hasunquote(cdr(x), depth - 1); }
-  if (car(x) == S_quasiquote) return hasunquote(cdr(x), depth + 1);
+  if (unalias(car(x)) == S_unquote || unalias(car(x)) == S_unqspl) { if (depth == 1) return 1; return hasunquote(cdr(x), depth - 1); }
+  if (unalias(car(x)) == S_quasiquote) return hasunquote(cdr(x), depth + 1);
   return hasunquote(car(x), depth) || hasunquote(cdr(x), depth);
 }
 long qq(long x, int depth) {
   long a;
   if (!hasunquote(x, depth)) return L2(S_quote, x);
   if (otype(x) == OVEC) return L2(sym("%list->vector"), qq(p_vec2list(x), depth));
-  if (car(x) == S_unquote) {
+  if (unalias(car(x)) == S_unquote) {
     if (depth == 1) return cadr(x);
     return L3(sym("%list"), L2(S_quote, S_unquote), qq(cadr(x), depth - 1));
   }
-  if (car(x) == S_quasiquote) return L3(sym("%list"), L2(S_quote, S_quasiquote), qq(cadr(x), depth + 1));
+  if (unalias(car(x)) == S_quasiquote) return L3(sym("%list"), L2(S_quote, S_quasiquote), qq(cadr(x), depth + 1));
   a = car(x);
-  if (ispair(a) && car(a) == S_unqspl && depth == 1) return L3(sym("%append"), cadr(a), qq(cdr(x), depth));
+  if (ispair(a) && unalias(car(a)) == S_unqspl && depth == 1) return L3(sym("%append"), cadr(a), qq(cdr(x), depth));
   return L3(sym("%cons"), qq(a, depth), qq(cdr(x), depth));
 }
 
@@ -482,7 +519,7 @@ long xp(long x, long env) {
   long b; long h; long a; long f; long g; long t; long p; int v;
   if (issym(x)) {
     b = lookup(x, env);
-    if (b == FALSE) return xref(globalvar(x));
+    if (b == FALSE) return xref(globalvar(unalias(x)));
     if (ismacro(b)) synerr("syntax keyword used as a variable", x);
     return xref((int)ival(b));
   }
@@ -495,8 +532,9 @@ long xp(long x, long env) {
     b = lookup(h, env);
     if (ismacro(b)) return xp(expandmacro(b, x, env), env);
   }
-  if (issym(h) && !islocal(h, env)) {
-    if (h == S_quote) { need(cdr(x), x); return xconst(cadr(x)); }
+  if (issym(h) && kwname(h, env) != FALSE) {
+    h = kwname(h, env);
+    if (h == S_quote) { need(cdr(x), x); return xconst(strip(cadr(x))); }
     if (h == S_quasiquote) return xp(qq(cadr(x), 1), env);
     if (h == S_lambda) { need(cdr(x), x); return xlambda(cadr(x), cddr(x), env, FALSE); }
     if (h == S_if) {
@@ -507,7 +545,7 @@ long xp(long x, long env) {
     if (h == S_set) {
       need(cddr(x), x);
       b = lookup(cadr(x), env);
-      v = b == FALSE ? globalvar(cadr(x)) : (int)ival(b);
+      v = b == FALSE ? globalvar(unalias(cadr(x))) : (int)ival(b);
       vnset[v]++;
       if (vglobal[v]) { vundef[v] = 0; vprim[v] = 0; }
       return node(X_SET, v, xp(caddr(x), env), 0);
@@ -569,7 +607,7 @@ long xp(long x, long env) {
     if (h == S_caselambda) return xp(xcaselambda(x), env);
     if (h == S_guard) {   /* (guard (e clause ...) body ...) */
       a = cdr(cadr(x));
-      for (f = a; f != NULL && !(ispair(car(f)) && car(car(f)) == S_else); f = cdr(f));
+      for (f = a; f != NULL && !(ispair(car(f)) && unalias(car(car(f))) == S_else); f = cdr(f));
       if (f == NULL) a = append2(a, L1(L2(S_else, L2(sym("%raise-continuable"), car(cadr(x))))));
       return xp(L3(sym("%guard"), cons(S_lambda, cons(NULL, cddr(x))),
                    L3(S_lambda, L1(car(cadr(x))), cons(S_cond, a))), env);
@@ -590,7 +628,7 @@ long xp(long x, long env) {
     if (p != FALSE && (b == FALSE || vprim[ival(b)])) return xprimcall(p, cdr(x), x, env);
   }
   /* a call */
-  f = xp(h, env);
+  f = xp(car(x), env);
   a = NULL;
   for (g = cdr(x); g != NULL; g = cdr(g)) {
     if (!ispair(g)) synerr("bad call", x);
@@ -618,7 +656,7 @@ int iskeyword(long s) {
 
 long xdefsyntax(long x, long env) {
   long name = cadr(x); long sr = caddr(x); long ell = S_ellipsis; long lits;
-  if (!ispair(sr) || car(sr) != S_syntaxrules) synerr("only syntax-rules macros are supported", x);
+  if (!ispair(sr) || !iskw(car(sr), S_syntaxrules, env)) synerr("only syntax-rules macros are supported", x);
   sr = cdr(sr);
   if (issym(car(sr))) { ell = car(sr); sr = cdr(sr); }
   lits = car(sr);
@@ -635,7 +673,7 @@ long match(long p, long x, long b) {
   long q; int np; int nx; int i; long items; long subs; long vars; long v; long r;
   if (issym(p)) {
     if (p == S_underscore) return b;
-    if (memq_(p, mlits)) return x == p ? b : MFAIL;
+    if (memq_(p, mlits)) return unalias(x) == unalias(p) ? b : MFAIL;
     return cons(cons(p, x), b);
   }
   if (otype(p) == OVEC) {
@@ -689,12 +727,13 @@ long instantiate(long t, long b) {
   if (issym(t)) {
     r = assq_(t, b);
     if (r != FALSE) return cdr(r);
-    if (iskeyword(t) || lookup(t, menv) != FALSE || primname(t) != FALSE) return t;
+    if (t == mell) return t;
     r = assq_(t, renames);
     if (r != FALSE) return cdr(r);
     sbn = 0; sbputs(sptr(t), sl(t)); sbput(' '); sbint(++ngensym);
     r = intern(sb, sbn); sbn = 0;
     renames = cons(cons(t, r), renames);
+    j = aslot(r); akey[j] = r; aorig[j] = t; aenv[j] = menv;
     return r;
   }
   if (otype(t) == OVEC) return list2vec(instantiate(p_vec2list(t), b));
@@ -1157,7 +1196,7 @@ int cgcall(long x, int ctx) {
 int cgprim(long x, int ctx) {
   int r = (int)n1(x); long args = n2(x); int n = len(args); int base; int i; int t;
   base = cgargs(args, 0);
-  if (pnargs[r] < 0) {
+  if (pcname[r][0] == 'v') {   /* the calling convention of procedures */
     storeargs(base, n);
     asp = base;
     callpre(ctx);
@@ -1425,7 +1464,10 @@ void wrapper(int v) {   /* a primitive as a procedure */
   }
   cur = B_FUNS;
   E("\nint W"); Ei(v); E("(int clo, int n) {\n");
-  for (r = 0; r < nprims; r++) if (pname[r] == vprim[v]) {
+  for (r = 0; r < nprims; r++) if (pname[r] == vprim[v] && pcname[r][0] == 'v') {
+    E("if (n == "); Ei(pnargs[r]); E(") return "); E(pcname[r]); E("(clo, n);\n");
+  }
+  for (r = 0; r < nprims; r++) if (pname[r] == vprim[v] && pcname[r][0] != 'v') {
     E("if (n == "); Ei(pnargs[r]); E(") { stk[0] = "); E(pcname[r]); E("(");
     for (i = 0; i < pnargs[r]; i++) { if (i) E(", "); E("stk["); Ei(i); E("]"); }
     E("); return 1; }\n");

@@ -10,4 +10,5 @@ cat c/libc.c c/cc.c     | $RUN out/cc0.wasm  > out/cc1.wasm           # the C co
 cat c/libc.c c/cc.c     | $RUN out/cc1.wasm  > out/cc.wasm            # ... and by itself
 cat c/libc.c c/wasm.c   | $RUN out/cc.wasm   > out/wasm.wasm          # the wasm interpreter
 cat c/libc.c rt/num.c lua/luac.c | $RUN out/cc.wasm > out/luac.wasm  # Lua -> C compiler
+cat c/libc.c rt/num.c rt/rt.c scheme/read.c scheme/scc.c | $RUN out/cc.wasm > out/scc.wasm  # Scheme -> C
 ls -l out/*.wasm

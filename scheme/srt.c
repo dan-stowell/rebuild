@@ -122,15 +122,6 @@ void sbval(long v, int wr) {
   }
   if (t == OSYM) { sbputs(sptr(v), sl(v)); return; }
   if (t == OPAIR) {
-    x = car_(v);
-    if (wr >= 0 && symq(x) && ispair(cdr_(v)) && cdr_(cdr_(v)) == NULL) {
-      p = (char *)0;
-      if (x == S_quote) p = "'";
-      if (x == S_quasiquote) p = "`";
-      if (x == S_unquote) p = ",";
-      if (x == S_unqspl) p = ",@";
-      if (p) { sbcstr(p); sbval(car_(cdr_(v)), wr); return; }
-    }
     sbput('(');
     while (1) {
       sbval(car_(v), wr);
@@ -281,11 +272,18 @@ long p_number2string2(long a, long r) {
   if (isint(a) && ival(r) != 10) { sbn = 0; sbintradix(ival(a), (int)ival(r)); return sbstr(); }
   return p_number2string(a);
 }
+int downc(int c);
 long p_string2number2(long s, long r) {
-  long x;
+  char *p; int n; int radix = (int)ival(r); int c;
   if (otype(s) != OSTR) typeerr("string->number", "string", s);
-  x = parsenum(sptr(s), sl(s), (int)ival(r));
-  return x;
+  p = sptr(s); n = sl(s);
+  while (n >= 2 && p[0] == '#') {
+    c = downc(p[1]);
+    if (c == 'x') radix = 16; else if (c == 'b') radix = 2; else if (c == 'o') radix = 8; else if (c == 'd') radix = 10;
+    else if (c != 'e') return FALSE;
+    p = p + 2; n = n - 2;
+  }
+  return parsenum(p, n, radix);
 }
 long p_string2number(long s) { return p_string2number2(s, mkint(10)); }
 

@@ -32,6 +32,14 @@ for t in lua/tests/*.lua; do
   cat c/libc.c rt/num.c lua/lrt.c out/t.c | w out/cc.wasm > out/t.wasm
   w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.lua}.out "  ... entirely on our interpreter"
 done
+cat c/libc.c rt/num.c rt/rt.c scheme/read.c scheme/scc.c | w out/cc.wasm > out/t; check out/t out/scc.wasm "scc (interpreted)"
+SRT="c/libc.c rt/num.c rt/rt.c scheme/read.c scheme/srt.c"
+for t in scheme/tests/*.scm; do
+  scheme/run.sh $t > out/t 2>&1;            check out/t ${t%.scm}.out "Scheme test $(basename $t)"
+  w out/scc.wasm < $t > out/t.c
+  cat $SRT out/t.c | w out/cc.wasm > out/t.wasm
+  w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.scm}.out "  ... entirely on our interpreter"
+done
 if [ "$1" = "--slow" ]; then
   { wc -c < out/cc.wasm; cat out/cc.wasm c/libc.c c/cc.c; } | w out/wasm.wasm > out/t
   check out/t out/cc.wasm "interpreter in interpreter runs the C compiler on itself"

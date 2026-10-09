@@ -1,0 +1,118 @@
+; A tour of the core: checked against chibi-scheme's output.
+(import (scheme base) (scheme char) (scheme write) (scheme inexact) (scheme lazy) (scheme r5rs))
+(define (show . xs) (for-each display xs) (newline))
+(define (wshow . xs) (for-each (lambda (x) (write x) (display " ")) xs) (newline))
+
+; numbers
+(show (+ 1 2) " " (- 10 4 3) " " (* 2 3 4) " " (- 5) " " (/ 12 4) " " (/ 1.0 4))
+(show (quotient 17 5) " " (remainder -17 5) " " (modulo -17 5) " " (expt 2 40) " " (expt 2.0 0.5))
+(show (max 1 2 3) " " (min 4 2.0) " " (abs -7) " " (gcd 12 18) " " (lcm 4 6))
+(show (exact->inexact 3) " " (exact (floor 2.7)) " " (round 2.5) " " (round 3.5) " " (truncate -2.7))
+(show (sqrt 16) " " (sqrt 2) " " (exact? 1) " " (inexact? 1.0) " " (integer? 2.0) " " (number? 'a))
+(show 1e21 " " 123.456 " " -0.5 " " 100.0 " " (/ 1. 3) " " (* 1.5 2))
+(show (number->string 255 16) " " (string->number "1e3") " " (string->number "#xff") " " (string->number "abc"))
+(show (= 1 1.0) " " (< 1 2 3) " " (< 1 3 2) " " (>= 3 3 1) " " (zero? 0.0) " " (even? 10) " " (odd? 7))
+(show (exp 0) " " (log 1) " " (square 12) " " (exact (round 1e15)))
+(show 9007199254740993 " " (* 3037000499 3037000499) " " (- (expt 2 62) 1 (- (expt 2 62))))
+
+; booleans, equality
+(show (not #f) " " (not 3) " " (eq? 'a 'a) " " (eqv? 1.5 1.5) " " (equal? '(1 (2 #(3))) '(1 (2 #(3)))) " " (eq? '() '()))
+(show (equal? "abc" "abc") " " (eqv? "abc" "abc") " " (boolean? #f))
+
+; lists
+(define l (list 1 2 3 4 5))
+(show (car l) " " (cdr l) " " (cadr l) " " (length l) " " (reverse l) " " (append l '(6) '() '(7 8)))
+(wshow (list-tail l 2) (list-ref l 3) (memq 'c '(a b c d)) (member "b" '("a" "b")) (assq 'b '((a 1) (b 2))))
+(show (assoc 2.0 '((1 one) (2 two)) =) " " (map + '(1 2 3) '(10 20 30)) " " (map (lambda (x) (* x x)) l))
+(show (apply + 1 2 '(3 4)) " " (apply max l) " " (list? l) " " (list? '(1 . 2)) " " (pair? '()) " " (null? '()))
+(let ((p (cons 1 2))) (set-car! p 10) (set-cdr! p '(20)) (show p))
+(show `(1 ,(+ 1 1) ,@(list 3 4) 5) " " `#(a ,(car l)) " " `(x `(y ,(z ,(+ 1 2)))))
+(show (let loop ((i 0) (acc '())) (if (= i 5) (reverse acc) (loop (+ i 1) (cons (* i i) acc)))))
+
+; characters, strings, symbols
+(show (char->integer #\A) " " (integer->char 97) " " (char-upcase #\a) " " (char-alphabetic? #\1) " " (char<? #\a #\b))
+(define s (make-string 3 #\x))
+(string-set! s 1 #\y)
+(show s " " (string-length "hello") " " (string-ref "hello" 1) " " (substring "hello" 1 3) " " (string-append "a" "b" "c"))
+(wshow (string->list "abc") (list->string (list #\d #\e)) (string=? "a" "a") (string<? "abc" "abd"))
+(show (symbol->string 'foo) " " (string->symbol "bar") " " (string->number "42") " " (number->string 3.5))
+(write (list "a\nb" #\a 'sym 1.5)) (newline)
+
+; vectors
+(define v (make-vector 3 0))
+(vector-set! v 0 'a)
+(show v " " (vector-length v) " " (vector-ref #(1 2 3) 2) " " (vector->list #(1 2)) " " (list->vector '(3 4)))
+(wshow (vector-map (lambda (x) (* 2 x)) #(1 2 3)) (vector 1 "two" #\3))
+(vector-for-each (lambda (x) (display x)) #(1 2 3)) (newline)
+
+; control
+(define (count-to n) (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i n) (reverse acc))))
+(show (count-to 5))
+(show (case 3 ((1 2) 'low) ((3 4) 'mid) (else 'high)) " " (case 'x ((a) 1) (else => (lambda (x) x))))
+(show (cond ((assv 2 '((1 . a) (2 . b))) => cdr) (else 'none)) " " (and 1 2 3) " " (and) " " (or #f 2) " " (or))
+(show (when #t 'yes) " " (unless #f 'no))
+(show (let* ((x 1) (y (+ x 1))) (* x y)) " " (letrec ((ev? (lambda (n) (if (= n 0) #t (od? (- n 1))))) (od? (lambda (n) (if (= n 0) #f (ev? (- n 1)))))) (ev? 100)))
+(define (make-counter)
+  (let ((n 0)) (lambda () (set! n (+ n 1)) n)))
+(define c1 (make-counter))
+(c1) (c1)
+(show (c1))
+(define (deep n) (if (= n 0) 0 (+ 1 (deep (- n 1)))))
+(show (deep 10000))
+(define (tail n acc) (if (= n 0) acc (tail (- n 1) (+ acc 1))))
+(show (tail 1000000 0))
+(show (call-with-current-continuation (lambda (k) (+ 1 (k 42)))))
+(show (call-with-values (lambda () (values 1 2)) +))
+(define (floor/-ish a b) (values (quotient a b) (remainder a b)))
+(define-values (q r) (floor/-ish 17 5))
+(show q " " r)
+(let-values (((a b) (values 1 2)) ((c) (values 3))) (show a b c))
+(define p (delay (begin (display "[forced]") 5)))
+(show (force p) (force p))
+(show (with-exception-handler
+        (lambda (e) 10)
+        (lambda () (+ 1 (raise-continuable 'oops)))))
+(show (guard (e (#t (list 'caught e))) (raise 'boom)))
+(show (guard (e ((string? e) 'str) ((symbol? e) 'sym)) (raise 'x)))
+(show (guard (e ((error-object? e) (error-object-message e))) (error "bad thing" 1 2)))
+(dynamic-wind (lambda () (display "[in]")) (lambda () (display "body")) (lambda () (display "[out]") (newline)))
+(define param (make-parameter 10))
+(show (param) " " (parameterize ((param 20)) (param)) " " (param))
+
+; records
+(define-record-type point (make-point x y) point? (x point-x set-point-x!) (y point-y))
+(define pt (make-point 1 2))
+(set-point-x! pt 5)
+(show (point-x pt) " " (point-y pt) " " (point? pt) " " (point? 5))
+
+; macros
+(define-syntax swap!
+  (syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))
+(define tmp 1) (define other 2)
+(swap! tmp other)
+(show tmp " " other)
+(define-syntax my-or (syntax-rules () ((_) #f) ((_ e) e) ((_ e r ...) (let ((t e)) (if t t (my-or r ...))))))
+(define t 5)
+(show (my-or #f t))
+(define-syntax my-let* (syntax-rules () ((_ () body ...) (let () body ...)) ((_ ((x v) rest ...) body ...) (let ((x v)) (my-let* (rest ...) body ...)))))
+(show (my-let* ((a 1) (b (+ a 1))) (* a b)))
+(define-syntax for
+  (syntax-rules (in)
+    ((_ x in lst body ...) (for-each (lambda (x) body ...) lst))))
+(for y in '(1 2 3) (display y))
+(newline)
+
+; internal defines, closures in loops
+(define (f x)
+  (define a 10)
+  (define (g y) (+ y a))
+  (g x))
+(show (f 1))
+(define procs (let loop ((i 0) (acc '())) (if (= i 3) acc (loop (+ i 1) (cons (lambda () i) acc)))))
+(show (map (lambda (p) (p)) procs))
+(define (string-port-test)
+  (let ((out (open-output-string)))
+    (write 'hello out) (display " " out) (write "w" out)
+    (get-output-string out)))
+(show (string-port-test))
+(wshow (let* ((p (open-input-string "ab")) (a (read-char p)) (b (peek-char p)) (c (read-char p))) (list a b c (eof-object? (read-char p)))))
