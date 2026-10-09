@@ -36,6 +36,8 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
   `__heap_base()`, `__f64_bits(d)` and `__f64_from_bits(l)` (reinterpret),
   `__builtin_{sqrt,floor,ceil,trunc,fabs,nearbyint,fmin,fmax,copysign}`
   and `__builtin_{clz,ctz,popcount}{,ll}`, each one wasm instruction.
+- `return f(...)`, when the call's value is returned unconverted, is a tail
+  call (wasm `return_call`): it doesn't grow the stack.
 - A function that is declared but never defined, and is called, becomes a
   WASI import.
 - Ignored: `#` lines (so `#include` is harmless), comments.

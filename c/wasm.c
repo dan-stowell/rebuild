@@ -209,17 +209,19 @@ void translate(int f, int end) {
     if (op == 0x0f) { emit(0x0f); unreach = 1; continue; }
     if (op == 0x00) { emit(0x00); unreach = 1; continue; }
     if (op == 0x01) continue;
-    if (op == 0x10) {
+    if (op == 0x10 || op == 0x12) {   /* call, return_call */
       n = uleb();
       if (n >= nfuncs) die("bad function index", n);
       pop(tnp[ftype[n]]); h = h + tnr[ftype[n]];
-      emit(0x10); emit(n);
+      emit(op); emit(n);
+      if (op == 0x12) unreach = 1;
       continue;
     }
-    if (op == 0x11) {
+    if (op == 0x11 || op == 0x13) {   /* call_indirect, return_call_indirect */
       n = uleb(); uleb();
       pop(1 + tnp[n]); h = h + tnr[n];
-      emit(0x11); emit(n);
+      emit(op); emit(n);
+      if (op == 0x13) unreach = 1;
       continue;
     }
     if (op == 0x1a) { pop(1); emit(op); continue; }
@@ -473,8 +475,8 @@ void run(int entry) {
       nfr--;
       f = sff[nfr]; pc = sfpc[nfr]; fp = sffp[nfr]; ob = sfob[nfr];
       break;
-    case 0x10: case 0x11:
-      if (op == 0x10) n = c[pc++];
+    case 0x10: case 0x11: case 0x12: case 0x13:
+      if (op == 0x10 || op == 0x12) n = c[pc++];
       else {
         x = (int)vs[--sp];
         if ((unsigned)x >= (unsigned)tabsize) trap("undefined table element");
@@ -482,6 +484,27 @@ void run(int entry) {
         if (n < 0) trap("uninitialized table element");
         if (tnp[ftype[n]] != tnp[c[pc]] || tnr[ftype[n]] != tnr[c[pc]]) trap("indirect call type mismatch");
         pc++;
+      }
+      if (op >= 0x12) {   /* a tail call: replace this frame */
+        if (fhost[n]) {
+          host(n);
+          x = tnr[ftype[n]];
+          for (i = 0; i < x; i++) vs[fp + i] = vs[sp - x + i];
+          sp = fp + x;
+          if (nfr == base) return;
+          nfr--;
+          f = sff[nfr]; pc = sfpc[nfr]; fp = sffp[nfr]; ob = sfob[nfr];
+          break;
+        }
+        x = tnp[ftype[n]];
+        for (i = 0; i < x; i++) vs[fp + i] = vs[sp - x + i];
+        sp = fp + x;
+        f = n;
+        ob = sp + fnloc[f];
+        if (ob + 4096 > VSZ) trap("value stack exhausted");
+        for (i = sp; i < ob; i++) vs[i] = 0;
+        sp = ob; pc = fcode[f];
+        break;
       }
       if (fhost[n]) { host(n); break; }
       if (nfr >= FSZ) trap("call stack exhausted");

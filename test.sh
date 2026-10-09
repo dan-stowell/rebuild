@@ -21,7 +21,7 @@ cat c/libc.c c/wasm.c | w out/cc.wasm > out/t;  check out/t out/wasm.wasm "inter
 cat c/libc.c lua/num.c lua/luac.c | w out/cc.wasm > out/t; check out/t out/luac.wasm "luac (interpreted)"
 $RUN out/compiler.wasm < tests/hello.sx > out/hello.wasm
 w out/hello.wasm < /dev/null > out/t;       check out/t tests/hello.out "sx test program (interpreted)"
-for t in basic fnptr switch types; do
+for t in basic fnptr switch types tail; do
   cat c/libc.c c/tests/$t.c | $RUN out/cc.wasm > out/$t.wasm
   $RUN out/$t.wasm > out/t;                 check out/t c/tests/$t.out "C test $t"
   w out/$t.wasm < /dev/null > out/t;        check out/t c/tests/$t.out "  ... on our interpreter"

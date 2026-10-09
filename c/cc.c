@@ -389,6 +389,8 @@ int tmpk;            /* and values of each kind: tmpk + 0, 1, 2 */
 int nloc;
 int ltype[MAXLOC];   /* the types of this function's locals */
 int curret;          /* this function's return type */
+int callop;          /* where the last call's opcode is, and where it ends: */
+int callend;         /* return f(x) becomes a tail call (return_call) */
 
 void load(int t) {
   if (t == TY_CHAR) emit3(0x2c, 0, 0);
@@ -577,7 +579,9 @@ int call(int p, int n) {
       expect(')');
     }
     rv(var(s));
+    callop = clen;
     emit(0x11); reloc(R_TYPE, np); emit(0);
+    callend = clen;
     usetable = 1;
     lv = 0;
     return TY_INT;
@@ -594,7 +598,9 @@ int call(int p, int n) {
     expect(')');
   }
   if (np != fnp[f]) die("wrong number of arguments");
+  callop = clen;
   emit(0x10); reloc(R_FUNC, f);
+  callend = clen;
   fused[f] = 1;
   lv = 0;
   return fret[f];
@@ -992,8 +998,13 @@ void stmt() {
     emit(0x0c); uleb(depth - top);
     emit2(0x0b, 0x0b); depth = depth - 2;
   } else if (accept(T_RETURN)) {
-    if (!accept(';')) { t = expr(); rv(t); conv(t, curret); expect(';'); }
-    emit(0x0f);
+    if (!accept(';')) {
+      callend = -1;
+      t = expr(); rv(t); conv(t, curret); expect(';');
+      /* a call whose result is returned as is: a tail call (return_call) */
+      if (to_out == 0 && clen == callend && t != TY_VOID) code[callop] = code[callop] + 2;
+      else emit(0x0f);
+    } else emit(0x0f);
   } else if (accept(T_SWITCH)) {
     switchstmt();
   } else if (accept(T_BREAK)) {
