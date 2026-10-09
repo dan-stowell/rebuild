@@ -1,44 +1,39 @@
 #!/bin/sh
-# Build the chain, then check that the runtime reproduces every stage.
+# Build the chain, then check it: every stage reproduces itself, also when
+# run by our own interpreter (out/wasm.wasm), and the test programs work.
+#   ./test.sh [--slow]     (--slow: also the interpreter inside itself)
 set -e
 cd "$(dirname "$0")"
 RUN=${RUN:-wasmtime}; export RUN
 ./build.sh > /dev/null
-check() { if cmp -s "$1" "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
 fail=0
-$RUN seed/seed.wasm < seed/seed.hex > out/t1 || true
-check out/t1 seed/seed.wasm "seed assembles itself"
+check() { if cmp -s "$1" "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+w() { ./run.sh "$@"; }   # run a module on our interpreter
+set +e
+
+$RUN seed/seed.wasm < seed/seed.hex > out/t; check out/t seed/seed.wasm "seed assembles itself"
+w seed/seed.wasm < seed/seed.hex > out/t;   check out/t seed/seed.wasm "  ... on our interpreter"
+w seed/seed.wasm < stage1/compiler.hex > out/t; check out/t out/compiler.wasm "seed assembles the sx compiler (interpreted)"
+w out/compiler.wasm < c/cc.sx > out/t;      check out/t out/cc0.wasm "sx compiler compiles cc.sx (interpreted)"
+cat c/libc.c c/cc.c | $RUN out/cc.wasm > out/t; check out/t out/cc.wasm "C compiler: fixed point"
+cat c/libc.c c/cc.c | w out/cc.wasm > out/t;    check out/t out/cc.wasm "  ... on our interpreter"
+cat c/libc.c c/wasm.c | w out/cc.wasm > out/t;  check out/t out/wasm.wasm "interpreter compiles itself (interpreted)"
+cat c/libc.c lua/num.c lua/luac.c | w out/cc.wasm > out/t; check out/t out/luac.wasm "luac (interpreted)"
 $RUN out/compiler.wasm < tests/hello.sx > out/hello.wasm
-./run.sh out/hello.wasm < /dev/null > out/t2 || true
-check out/t2 tests/hello.out "runtime runs hello"
-./run.sh seed/seed.wasm < seed/seed.hex > out/t3 || true
-check out/t3 seed/seed.wasm "runtime runs seed on seed.hex"
-./run.sh seed/seed.wasm < stage1/compiler.hex > out/t4 || true
-check out/t4 out/compiler.wasm "runtime runs seed on compiler.hex"
-./run.sh out/compiler.wasm < stage2/runtime.sx > out/t5 || true
-check out/t5 out/runtime.wasm "runtime runs compiler on runtime.sx"
-cat c/libc.c c/cc.c | $RUN out/cc.wasm > out/t7 || true
-check out/t7 out/cc.wasm "C compiler compiles itself to a fixed point"
-cat c/libc.c c/cc.c | ./run.sh out/cc.wasm > out/t8 || true
-check out/t8 out/cc.wasm "runtime runs the C compiler on itself"
-cat c/libc.c c/tests/basic.c | $RUN out/cc.wasm > out/basic.wasm
-$RUN out/basic.wasm > out/t9 || true
-check out/t9 c/tests/basic.out "C test program"
-for t in fnptr switch; do
+w out/hello.wasm < /dev/null > out/t;       check out/t tests/hello.out "sx test program (interpreted)"
+for t in basic fnptr switch types; do
   cat c/libc.c c/tests/$t.c | $RUN out/cc.wasm > out/$t.wasm
-  ./run.sh out/$t.wasm < /dev/null > out/t10 || true
-  check out/t10 c/tests/$t.out "C test $t (on our runtime)"
+  $RUN out/$t.wasm > out/t;                 check out/t c/tests/$t.out "C test $t"
+  w out/$t.wasm < /dev/null > out/t;        check out/t c/tests/$t.out "  ... on our interpreter"
 done
-cat c/libc.c c/tests/types.c | $RUN out/cc.wasm > out/types.wasm
-$RUN out/types.wasm > out/t12 || true
-check out/t12 c/tests/types.out "C test types (long, double, unsigned)"
 for t in lua/tests/*.lua; do
-  lua/run.sh $t > out/t11 2>&1 || true
-  check out/t11 ${t%.lua}.out "Lua test $(basename $t)"
+  lua/run.sh $t > out/t 2>&1;               check out/t ${t%.lua}.out "Lua test $(basename $t)"
+  w out/luac.wasm < $t > out/t.c
+  cat c/libc.c lua/num.c lua/lrt.c out/t.c | w out/cc.wasm > out/t.wasm
+  w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.lua}.out "  ... entirely on our interpreter"
 done
 if [ "$1" = "--slow" ]; then
-  { wc -c < out/compiler.wasm; cat out/compiler.wasm stage2/runtime.sx; } |
-    ./run.sh out/runtime.wasm > out/t6 || true
-  check out/t6 out/runtime.wasm "runtime in runtime runs compiler on runtime.sx"
+  { wc -c < out/cc.wasm; cat out/cc.wasm c/libc.c c/cc.c; } | w out/wasm.wasm > out/t
+  check out/t out/cc.wasm "interpreter in interpreter runs the C compiler on itself"
 fi
 exit $fail

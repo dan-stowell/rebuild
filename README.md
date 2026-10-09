@@ -1,70 +1,67 @@
 # rebuild
 
-Bootstrapping a WebAssembly runtime from a tiny hand-written wasm seed.
+Tools that target only WebAssembly, grown from a tiny hand-written seed.
+
+The bet: one target (wasm), one usage pattern (invoke, run, throw away),
+and ahead-of-time compilation all the way down.  Those sharp edges keep the
+tools small enough to read, and quick to build from nothing: the whole
+chain below builds from the seed in well under a second.
 
 ```
-seed/seed.wasm   (353 bytes, hand-written hex assembler)
-   │  assembles
+seed/seed.wasm   353 bytes: a hex assembler, hand-written as raw wasm
+   │  assembles stage1/compiler.hex
    ▼
-compiler.wasm    (3.2 KB, from stage1/compiler.hex: a compiler for "sx", a tiny s-expression language)
-   │  compiles
+compiler.wasm    3 KB: a compiler for "sx", a tiny s-expression language
+   │  compiles c/cc.sx
    ▼
-runtime.wasm     (7.5 KB, from stage2/runtime.sx: a WebAssembly interpreter)
-   │  runs
+cc0.wasm         11 KB: a bootstrap C compiler (cc.c transcribed into sx)
+   │  compiles c/cc.c, which then compiles itself to a fixed point
    ▼
-any (supported) .wasm program — including seed.wasm, compiler.wasm and runtime.wasm itself
-
-compiler.wasm also compiles c/cc.sx → cc0.wasm (11 KB, bootstrap C compiler)
-   │  compiles c/cc.c (a C-subset compiler written in that subset)
-   ▼
-cc.wasm          (18 KB; compiles itself to a fixed point; see c/README.md)
+cc.wasm          28 KB: a compiler for a subset of C          (c/README.md)
+   ├─ compiles c/wasm.c  →  wasm.wasm   26 KB: a WebAssembly interpreter
+   └─ compiles lua/luac.c → luac.wasm   33 KB: Lua → C, ahead of time (lua/README.md)
 ```
 
-The only binary you have to trust (besides the host runtime that runs the
-first step) is `seed/seed.wasm`, which is exactly the bytes written out in
-`seed/seed.hex` — and assembling `seed.hex` with `seed.wasm` reproduces
-`seed.wasm`.
+The only binary to trust, besides the host that runs the first step, is
+`seed/seed.wasm`: it is exactly the bytes written out in `seed/seed.hex`,
+and assembling `seed.hex` with it reproduces it.
 
-| stage | source | binary |
-|---|---|---|
-| seed (hex assembler) | `seed/seed.hex` (hand-written wasm) | **353 bytes** |
-| compiler (sx → wasm) | `stage1/compiler.hex`, 593 lines of annotated hex | 3197 bytes |
-| runtime (wasm interpreter) | `stage2/runtime.sx`, 580 lines of sx | 7455 bytes |
-| bootstrap C compiler | `c/cc.sx`, a transcription of `cc.c` into sx | 11415 bytes |
-| C compiler | `c/cc.c`, ~800 lines of the C subset | 18047 bytes |
-
-Of the seed's 353 bytes, 130 are module structure (the WASI import
-section alone is 70); the code section is 223.
-
-`tools/` holds dev-only helpers; nothing in the bootstrap chain uses them.
+The interpreter is a check that the chain is complete, not the way to run
+things fast: it runs every stage, including itself, and the results must
+be byte-identical.  Production runs use a real engine (wasmtime, a
+browser), which compiles our naive wasm well.
 
 ## Running it
 
-Needs a WASI host runtime for the first step (default `wasmtime`; set `RUN=`
-to use another).
+Needs a WASI runtime for the first step (default `wasmtime`; set `RUN=`).
 
 ```
-./build.sh                  # seed -> out/compiler.wasm -> out/runtime.wasm
-./run.sh guest.wasm < input # run a guest on out/runtime.wasm
-./test.sh [--slow]          # the runtime reproduces every stage byte-for-byte
-                            # (--slow: also runtime-in-runtime)
+./build.sh                   # seed -> ... -> out/cc.wasm, wasm.wasm, luac.wasm
+./test.sh [--slow]           # every stage reproduces itself, also interpreted
+lua/run.sh prog.lua          # compile a Lua program ahead of time and run it
+lua/corpus.sh                # the Lua corpus: 14/14 match Lua 5.4's output
+./run.sh guest.wasm < input  # run a module on our interpreter
 ```
 
-The runtime reads the guest module from stdin, prefixed by its length in
-decimal and a newline; the rest of stdin is the guest's stdin.  `run.sh`
-does that framing.
+`run.sh` feeds the interpreter the guest module (its length, a newline, the
+bytes) and then the guest's stdin.
 
 ## The pieces
 
-- `seed/seed.hex` — the seed, annotated.  Hex pairs become bytes, `;` starts
-  a comment, and `{ ... }` prefixes a region with its length (a 5-byte
-  LEB128), which is what makes writing wasm by hand practical.
-- `stage1/compiler.hex` — compiler for sx, written as raw wasm in the
-  seed's format.  sx: every value is an i32; `(fn name (params) (locals)
-  body...)`, `(global name n)`, `(const name n)`, `if`, `while`, `do`, `set`,
-  `return`, calls, strings, and wasm's i32 ops by short names (`+`, `<u`,
-  `load8`, `store`, `memgrow`, ...).  See the header of the file.
-- `stage2/runtime.sx` — the interpreter.  It supports the i32 subset of
-  wasm 1.0: all control flow, calls, `call_indirect`/tables, globals,
-  memory, i32 loads/stores/arithmetic, plus `memory.copy`/`memory.fill`,
-  and WASI `fd_read`, `fd_write`, `proc_exit`.
+- `seed/seed.hex` — hex pairs become bytes, `;` starts a comment, and
+  `{ ... }` prefixes a region with its length (a 5-byte LEB128).
+- `stage1/compiler.hex` — the sx compiler, as annotated raw wasm.  sx: every
+  value is an i32; functions, globals, constants, `if`, `while`, `set`,
+  calls, strings, and wasm's i32 operators by short names.
+- `c/cc.sx` — the C compiler transcribed into sx, only to compile `cc.c`.
+- `c/cc.c` — one pass, no AST, emitting wasm while parsing.  `char`, `int`,
+  `long`, `double`, `unsigned`, pointers, `switch`, function pointers.
+  `cc.c` uses only int, char and pointers itself, so that `cc.sx` can
+  compile it.  `c/libc.c` is the whole library: WASI I/O and a bump
+  allocator that never frees.
+- `c/wasm.c` — the interpreter: wasm 1.0 without f32, translated first so
+  branches need no label stack.
+- `lua/` — Lua 5.4 compiled ahead of time to C.
+
+`tools/hex.py` and `c/native.c` are dev-only helpers; nothing in the chain
+uses them.

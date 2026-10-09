@@ -545,10 +545,27 @@ int call(int p, int n) {
   if (nameis(p, n, "__builtin_ceil")) { t = TY_DOUBLE; f = 0x9b; s = TY_DOUBLE; }
   if (nameis(p, n, "__builtin_trunc")) { t = TY_DOUBLE; f = 0x9d; s = TY_DOUBLE; }
   if (nameis(p, n, "__builtin_fabs")) { t = TY_DOUBLE; f = 0x99; s = TY_DOUBLE; }
+  if (nameis(p, n, "__builtin_nearbyint")) { t = TY_DOUBLE; f = 0x9e; s = TY_DOUBLE; }
+  if (nameis(p, n, "__builtin_clz")) { t = TY_UINT; f = 0x67; s = TY_INT; }
+  if (nameis(p, n, "__builtin_ctz")) { t = TY_UINT; f = 0x68; s = TY_INT; }
+  if (nameis(p, n, "__builtin_popcount")) { t = TY_UINT; f = 0x69; s = TY_INT; }
+  if (nameis(p, n, "__builtin_clzll")) { t = TY_ULONG; f = 0x79; s = TY_LONG; }
+  if (nameis(p, n, "__builtin_ctzll")) { t = TY_ULONG; f = 0x7a; s = TY_LONG; }
+  if (nameis(p, n, "__builtin_popcountll")) { t = TY_ULONG; f = 0x7b; s = TY_LONG; }
   if (t >= 0) {
     expect('('); np = assign(); rv(np); conv(np, t); expect(')');
     emit(f);
     return s;
+  }
+  /* two double arguments: wasm's f64.min, max, copysign */
+  if (nameis(p, n, "__builtin_fmin")) f = 0xa4;
+  if (nameis(p, n, "__builtin_fmax")) f = 0xa5;
+  if (nameis(p, n, "__builtin_copysign")) f = 0xa6;
+  if (nameis(p, n, "__builtin_fmin") || nameis(p, n, "__builtin_fmax") || nameis(p, n, "__builtin_copysign")) {
+    expect('('); t = assign(); rv(t); conv(t, TY_DOUBLE); expect(',');
+    t = assign(); rv(t); conv(t, TY_DOUBLE); expect(')');
+    emit(f);
+    return TY_DOUBLE;
   }
   s = lookup(p, n);
   if (s >= 0 && (skind[s] == S_LOCAL || skind[s] == S_GLOBAL)) {

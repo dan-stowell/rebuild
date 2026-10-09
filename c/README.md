@@ -34,7 +34,8 @@ cat c/libc.c prog.c | wasmtime out/cc.wasm > prog.wasm
 - String escapes: `\n \t \r \0 \xHH`, and any other character as itself.
 - Builtins: `__builtin_trap()`, `__memory_size()`, `__memory_grow(n)`,
   `__heap_base()`, `__f64_bits(d)` and `__f64_from_bits(l)` (reinterpret),
-  and `__builtin_{sqrt,floor,ceil,trunc,fabs}`.
+  `__builtin_{sqrt,floor,ceil,trunc,fabs,nearbyint,fmin,fmax,copysign}`
+  and `__builtin_{clz,ctz,popcount}{,ll}`, each one wasm instruction.
 - A function that is declared but never defined, and is called, becomes a
   WASI import.
 - Ignored: `#` lines (so `#include` is harmless), comments.
