@@ -81,6 +81,24 @@ func rt_strcmp(a string, b string) int {
 	return 0
 }
 
+// string(r): r in UTF-8
+func rt_runestr(r int) string {
+	if r < 0 || r > 1114111 || r >= 55296 && r < 57344 {
+		r = 65533
+	}
+	b := make([]byte, 0, 4)
+	if r < 128 {
+		b = append(b, byte(r))
+	} else if r < 2048 {
+		b = append(b, byte(192|r>>6), byte(128|r&63))
+	} else if r < 65536 {
+		b = append(b, byte(224|r>>12), byte(128|r>>6&63), byte(128|r&63))
+	} else {
+		b = append(b, byte(240|r>>18), byte(128|r>>12&63), byte(128|r>>6&63), byte(128|r&63))
+	}
+	return string(b)
+}
+
 func rt_iovec() int32 {
 	if rt_iov == 0 {
 		rt_iov = rt_alloc(16)

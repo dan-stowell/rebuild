@@ -1,0 +1,21 @@
+consts: 0 1 2 1099511627776 1099511627775 abc 200
+divmod: 3 2
+swap: second first
+table: 30 5 16
+-5 is negative
+0 is zero
+7 is small
+100 is large
+days: weekend weekday ?
+wrap: 4 -2147483648 -3 -1 4
+bits: 240 6 -1 15
+strings: hello|world|12|e
+comparisons ok
+Xyz!!
+slices: 100 3 14 101
+copy: 3 25 49
+names: annbobannbob 4
+grid: 3
+loops: 625 5 3
+big 1250
+println: 42 true done

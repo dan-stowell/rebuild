@@ -533,7 +533,6 @@ var frstart []int // result types, in rtypes
 var fnr []int
 var fbody []int // the token of the body's {, or -1: an import
 var fwasm []int // wasm function index
-var ftype []int // wasm type index
 var ptypes []int
 var pnames []int // the token of each parameter's name
 var rtypes []int
@@ -580,6 +579,7 @@ const (
 	E_PRINT            // nv: 1 for println, nb: arguments
 	E_PANIC            // na
 	E_BLANK            // _, on the left of =
+	E_LIT              // nt: slice type, nb: elements
 	L_LIST             // na: item, nb: next or -1
 	S_BLOCK            // na: list
 	S_EXPR             // na
@@ -626,21 +626,6 @@ func listlen(l int) int {
 		l = nb[l]
 	}
 	return n
-}
-
-// a list, in order: append to the end with lastp
-var listhead int
-var listtail int
-
-func liststart() { listhead = -1; listtail = -1 }
-func listadd(item int) {
-	c := cons(item, -1)
-	if listtail < 0 {
-		listhead = c
-	} else {
-		nb[listtail] = c
-	}
-	listtail = c
 }
 
 func constnode(v int, t int) int { return node(E_CONST, t, -1, -1, -1, -1, v) }
@@ -722,7 +707,6 @@ func istypestart() bool {
 }
 
 func parseargs() int {
-	liststart()
 	head := -1
 	tail := -1
 	expect('(')
@@ -905,8 +889,11 @@ func primary() int {
 		expect(')')
 		return e
 	}
-	if istypestart() { // a conversion
+	if istypestart() { // a conversion, or a slice literal
 		to := parsetype()
+		if isslice(to) && tk[tp] == '{' {
+			return sliceliteral(to)
+		}
 		expect('(')
 		e := parseexpr()
 		expect(')')
@@ -939,6 +926,9 @@ func primary() int {
 		return parsecall(sval[s])
 	}
 	if k == S_CONST {
+		if stype[s] == TSTR { // a string constant: its offset and length in strs
+			return node(E_STR, TSTR, sval[s]&4294967295, sval[s]>>32, -1, -1, 0)
+		}
 		return constnode(sval[s], stype[s])
 	}
 	if k == S_LOCAL {
@@ -949,6 +939,31 @@ func primary() int {
 	}
 	die("unexpected type")
 	return -1
+}
+
+// []T{x, y, ...}
+func sliceliteral(t int) int {
+	expect('{')
+	head := -1
+	tail := -1
+	for !accept('}') {
+		e := parseexpr()
+		convert(e, elemtype(t))
+		c := cons(e, -1)
+		if tail < 0 {
+			head = c
+		} else {
+			nb[tail] = c
+		}
+		tail = c
+		if !accept(',') {
+			accept(';')
+			expect('}')
+			break
+		}
+		accept(';')
+	}
+	return node(E_LIT, t, -1, head, -1, -1, 0)
 }
 
 func conversion(to int, e int) int {
@@ -967,6 +982,10 @@ func conversion(to int, e int) int {
 			}
 			return constnode(v, to)
 		}
+		return node(E_CONV, to, e, -1, -1, -1, 0)
+	}
+	if to == TSTR && isint(f) {
+		settle(e)
 		return node(E_CONV, to, e, -1, -1, -1, 0)
 	}
 	if to == TSTR && isslice(f) && elemtype(f) == TBYTE || to == slicetype(TBYTE) && f == TSTR {
@@ -1242,7 +1261,6 @@ func isdefine() bool {
 }
 
 func parseexprlist() int {
-	liststart()
 	head := -1
 	tail := -1
 	for {
@@ -1302,7 +1320,6 @@ func definenames(start int, nnames int, rhs int) int {
 			types = append(types, nt[na[l]])
 		}
 	}
-	liststart()
 	head := -1
 	tail := -1
 	anynew := false
@@ -1442,7 +1459,6 @@ func block() int {
 	save := scopestart
 	mark := nsym
 	scopestart = nsym
-	liststart()
 	head := -1
 	tail := -1
 	for !accept('}') {
@@ -1685,10 +1701,12 @@ func rangeloop() int {
 	ks := -1
 	vs := -1
 	if kp >= 0 {
-		ks = sval[declare(tv[kp], tl[kp], TINT)]
+		k := declare(tv[kp], tl[kp], TINT) // (not sval[declare(...)]: declare can grow sval)
+		ks = sval[k]
 	}
 	if vp >= 0 {
-		vs = sval[declare(tv[vp], tl[vp], elemtype(t))]
+		v := declare(tv[vp], tl[vp], elemtype(t))
+		vs = sval[v]
 	}
 	return node(S_RANGE, 0, ks, vs, x, block(), 0)
 }
@@ -1708,7 +1726,6 @@ func switchstmt() int {
 		settle(tag)
 	}
 	expect('{')
-	liststart()
 	head := -1
 	tail := -1
 	for !accept('}') {
@@ -2295,6 +2312,11 @@ func gen(e int) {
 			}
 			return
 		}
+		if isint(f) { // string(rune): UTF-8
+			widen(f)
+			callf(findfunc("rt_runestr"))
+			return
+		}
 		// string <-> []byte: copy
 		ptrlen(f)
 		s := spill(TSTR)
@@ -2317,6 +2339,27 @@ func gen(e int) {
 	}
 	if k == E_INTRIN {
 		genintrinsic(e)
+		return
+	}
+	if k == E_LIT {
+		et := elemtype(t)
+		size := msize(et)
+		n := listlen(nb[e])
+		var vals []int
+		for l := nb[e]; l >= 0; l = nb[l] {
+			gen(na[l])
+			vals = append(vals, spill(et))
+		}
+		iconst(n * size)
+		callf(findfunc("rt_alloc"))
+		a := newlocal(I32)
+		lset(a)
+		for i := 0; i < n; i++ {
+			storemem(et, a, i*size, vals[i])
+		}
+		lget(a)
+		iconst(n)
+		iconst(n)
 		return
 	}
 	if k == E_PRINT {
@@ -2680,8 +2723,10 @@ func genstmt(s int) {
 		}
 		i := 0
 		for l := lhs; l >= 0; l = nb[l] {
-			pushlocals(types[i], vals[i])
-			store(na[l])
+			if !isblank(na[l]) {
+				pushlocals(types[i], vals[i])
+				store(na[l])
+			}
 			i++
 		}
 		return
@@ -2946,8 +2991,6 @@ func shiftfix(op int, t int, ct int) {
 
 var code []byte // the code section's entries
 var ndefined int
-var initcode []byte // global initializers: the body of the init function
-var initlocals []int
 
 func skipblock() {
 	d := 0
@@ -3034,7 +3077,6 @@ func funcsig() {
 		fbody = append(fbody, -1)
 	}
 	fwasm = append(fwasm, 0)
-	ftype = append(ftype, 0)
 }
 
 func istypeat(i int) bool {
@@ -3076,6 +3118,10 @@ func constspec(prevexpr int) int {
 		tp = save
 	} else {
 		tp = end
+	}
+	if nk[e] == E_STR && t < 0 {
+		addsym(p, n, S_CONST, TSTR, na[e]+nb[e]<<32)
+		return exprtok
 	}
 	if nk[e] != E_CONST {
 		die("not a constant")

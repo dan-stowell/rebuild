@@ -40,6 +40,14 @@ for t in scheme/tests/*.scm; do
   cat $SRT out/t.c | w out/cc.wasm > out/t.wasm
   w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.scm}.out "  ... entirely on our interpreter"
 done
+check out/gc1.wasm out/gc.wasm "bootstrap Go compiler (gc0, in C) and gc agree"
+cat go/rt.go go/gc.go | $RUN out/gc.wasm > out/t; check out/t out/gc.wasm "Go compiler: fixed point"
+cat go/rt.go go/gc.go | w out/gc.wasm > out/t;    check out/t out/gc.wasm "  ... on our interpreter"
+for t in go/tests/*.go; do
+  go/run.sh $t > out/t 2>&1;                check out/t ${t%.go}.out "Go test $(basename $t)"
+  cat go/rt.go $t | w out/gc.wasm > out/t.wasm
+  w out/t.wasm < /dev/null > out/t 2>&1;    check out/t ${t%.go}.out "  ... entirely on our interpreter"
+done
 if [ "$1" = "--slow" ]; then
   { wc -c < out/cc.wasm; cat out/cc.wasm c/libc.c c/cc.c; } | w out/wasm.wasm > out/t
   check out/t out/cc.wasm "interpreter in interpreter runs the C compiler on itself"
