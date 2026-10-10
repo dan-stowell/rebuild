@@ -20,13 +20,15 @@ int sys_write(int fd, char *buf, int n) {
 
 /* memory is never freed: programs are short-lived */
 char *brk_;
-char *malloc(int n) {
-  char *p;
+char *malloc(int n) {   /* in ints only: the bootstrap compiler builds this too */
+  char *p; int top; int pages;
   if (!brk_) brk_ = __heap_base();
   p = brk_;
-  brk_ = brk_ + ((n + 7) & ~7);
-  while ((int)brk_ > __memory_size() * 65536)
-    if (__memory_grow(((int)brk_ >> 16) + 1 - __memory_size()) < 0) return (char *)0;
+  top = (int)brk_ + ((n + 7) & ~7);
+  pages = ((top >> 16) & 65535) + 1;   /* 64K pages up to top, for up to 4G */
+  if (n < 0 || pages <= (((int)brk_ >> 16) & 65535)) return (char *)0;   /* wrapped */
+  if (pages > __memory_size() && __memory_grow(pages - __memory_size()) < 0) return (char *)0;
+  brk_ = (char *)top;
   return p;
 }
 void free(char *p) {}

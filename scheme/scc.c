@@ -408,6 +408,7 @@ long xbody(long forms, long env) {
     if (islambda(cdr(car(it)), env2)) {
       lvars = cons(v, lvars);
       lams = cons(xlambda(cadr(cdr(car(it))), cddr(cdr(car(it))), env2, car(car(it))), lams);
+      vlam[v] = (int)n1(car(lams));
     } else {
       ovars = cons(v, ovars);
       inits = cons(xconst(NIL), inits);
@@ -973,56 +974,83 @@ void Ename(long s) {   /* a symbol, for a comment */
 
 /* ------------------------------------------------------------ constants */
 
+/* Constants live in K[], made by sc_init: compound data are read from
+ * their written form. */
 int nk;
 long ksymk[GSZ]; long ksyms[GSZ];   /* symbol -> its K slot */
-void kexpr(long d, int k);
 int compound(long d) { return ispair(d) || otype(d) == OVEC; }
-int kbuild(long d);
-/* write the C expression for datum d; compound ones were built into slot k */
-void kexpr(long d, int k) {
+int symplain(long s) {
+  int i; int c;
+  if (sl(s) == 0 || parsenum(sptr(s), sl(s), 10) != FALSE) return 0;
+  for (i = 0; i < sl(s); i++) {
+    c = sptr(s)[i];
+    if (isdelim(c) || c == '|' || c == '\'' || c == '`' || c == ',' || c == '#' && i == 0) return 0;
+  }
+  return !(sl(s) == 1 && sptr(s)[0] == '.');
+}
+void sbwritten(long d) {   /* the written form of d, for the reader */
+  int t = otype(d); int i; int c;
+  if (t == OPAIR) {
+    sbput('(');
+    while (1) { sbwritten(car(d)); d = cdr(d); if (!ispair(d)) break; sbput(' '); }
+    if (d != NULL) { sbcstr(" . "); sbwritten(d); }
+    sbput(')');
+  } else if (t == OVEC) {
+    sbcstr("#(");
+    for (i = 0; i < vlen(d); i++) { if (i) sbput(' '); sbwritten(velts(d)[i]); }
+    sbput(')');
+  } else if (t == OSTR) {
+    sbput('"');
+    for (i = 0; i < sl(d); i++) {
+      c = sptr(d)[i] & 255;
+      if (c == '"' || c == '\\') { sbput('\\'); sbput(c); }
+      else if (c < 32 || c > 126) { sbcstr("\\x"); sbintradix(c, 16); sbput(';'); }
+      else sbput(c);
+    }
+    sbput('"');
+  } else if (t == OSYM) {
+    if (symplain(d)) sbputs(sptr(d), sl(d));
+    else { sbput('|'); sbputs(sptr(d), sl(d)); sbput('|'); }
+  } else if (ischar(d)) { sbcstr("#\\x"); sbintradix(charval(d), 16); }
+  else if (isdbl(d)) {
+    if (dval(d) != dval(d)) sbcstr("+nan.0");
+    else if (dval(d) - dval(d) != dval(d) - dval(d)) sbcstr(dval(d) > 0 ? "+inf.0" : "-inf.0");
+    else {
+      c = sbn; sbdblshort(dval(d));
+      for (i = c; i < sbn && sb[i] != '.' && sb[i] != 'e'; i++);
+      if (i == sbn) sbcstr(".0");
+    }
+  }
+  else if (isint(d)) sbint(ival(d));
+  else if (d == TRUE) sbcstr("#t");
+  else if (d == FALSE) sbcstr("#f");
+  else if (d == NULL) sbcstr("()");
+  else die("scc: a constant that can't be written", "");
+}
+void kexpr(long d) {   /* the C expression for a non-compound constant */
   int t = otype(d);
-  if (compound(d)) { E("K["); Ei(k); E("]"); }
-  else if (t == OSTR) { E("mkstr("); Ecstr(sptr(d), sl(d)); E(", "); Ei(sl(d)); E(")"); }
+  if (t == OSTR) { E("mkstr("); Ecstr(sptr(d), sl(d)); E(", "); Ei(sl(d)); E(")"); }
   else if (t == OSYM) { E("intern("); Ecstr(sptr(d), sl(d)); E(", "); Ei(sl(d)); E(")"); }
   else if (t == OINT) { E("mkint("); El(ival(d)); E(")"); }
   else El(d);
 }
 int kbuild(long d) {
-  long items = NULL; long ks = NULL; long l; int k; int i; int save = cur;
+  int k; int i; int save = cur;
   cur = B_INIT;
-  if (ispair(d)) {
-    for (l = d; ispair(l); l = cdr(l)) {
-      items = cons(car(l), items);
-      ks = cons(compound(car(l)) ? kbuild(car(l)) : 0, ks);
-    }
-    i = compound(l) ? kbuild(l) : 0;
-    k = nk++;
-    cur = B_INIT;
-    E("  K["); Ei(k); E("] = "); kexpr(l, i); E(";\n");
-    for (; items != NULL; items = cdr(items)) {
-      E("  K["); Ei(k); E("] = cons("); kexpr(car(items), (int)car(ks)); E(", K["); Ei(k); E("]);\n");
-      ks = cdr(ks);
-    }
-  } else if (otype(d) == OVEC) {
-    for (i = 0; i < vlen(d); i++) ks = cons(compound(velts(d)[i]) ? kbuild(velts(d)[i]) : 0, ks);
-    ks = rev(ks);
-    k = nk++;
-    cur = B_INIT;
-    E("  K["); Ei(k); E("] = mkvec("); Ei(vlen(d)); E(", 0);\n");
-    for (i = 0; i < vlen(d); i++) {
-      E("  velts(K["); Ei(k); E("])["); Ei(i); E("] = "); kexpr(velts(d)[i], (int)car(ks)); E(";\n");
-      ks = cdr(ks);
-    }
-  } else {
-    if (otype(d) == OSYM) {
-      i = (int)((d >> 3) * 2654435761L) & (GSZ - 1);
-      while (ksyms[i] && ksyms[i] != d) i = (i + 1) & (GSZ - 1);
-      if (ksyms[i]) { cur = save; return (int)ksymk[i]; }
-      ksyms[i] = d; ksymk[i] = nk;
-    }
-    k = nk++;
-    E("  K["); Ei(k); E("] = "); kexpr(d, 0); E(";\n");
+  if (otype(d) == OSYM) {
+    i = (int)((d >> 3) * 2654435761L) & (GSZ - 1);
+    while (ksyms[i] && ksyms[i] != d) i = (i + 1) & (GSZ - 1);
+    if (ksyms[i]) { cur = save; return (int)ksymk[i]; }
+    ksyms[i] = d; ksymk[i] = nk;
   }
+  k = nk++;
+  E("  K["); Ei(k); E("] = ");
+  if (compound(d)) {
+    sbn = 0; sbwritten(d);
+    E("kread("); Ecstr(sb, sbn); E(")");
+    sbn = 0;
+  } else kexpr(d);
+  E(";\n");
   cur = save;
   return k;
 }
@@ -1376,6 +1404,17 @@ void prims() {
   prim("cons", 2, "p_cons"); prim("car", 1, "p_car"); prim("cdr", 1, "p_cdr");
   prim("set-car!", 2, "p_setcar"); prim("set-cdr!", 2, "p_setcdr");
   prim("caar", 1, "p_caar"); prim("cadr", 1, "p_cadr"); prim("cdar", 1, "p_cdar"); prim("cddr", 1, "p_cddr");
+prim("caaar", 1, "p_caaar"); prim("caadr", 1, "p_caadr");
+  prim("cadar", 1, "p_cadar"); prim("cdaar", 1, "p_cdaar");
+  prim("cdadr", 1, "p_cdadr"); prim("cddar", 1, "p_cddar");
+  prim("caaaar", 1, "p_caaaar"); prim("caaadr", 1, "p_caaadr");
+  prim("caadar", 1, "p_caadar"); prim("caaddr", 1, "p_caaddr");
+  prim("cadaar", 1, "p_cadaar"); prim("cadadr", 1, "p_cadadr");
+  prim("caddar", 1, "p_caddar"); prim("cdaaar", 1, "p_cdaaar");
+  prim("cdaadr", 1, "p_cdaadr"); prim("cdadar", 1, "p_cdadar");
+  prim("cdaddr", 1, "p_cdaddr"); prim("cddaar", 1, "p_cddaar");
+  prim("cddadr", 1, "p_cddadr"); prim("cdddar", 1, "p_cdddar");
+  prim("cddddr", 1, "p_cddddr");
   prim("caddr", 1, "p_caddr"); prim("cdddr", 1, "p_cdddr"); prim("cadddr", 1, "p_cadddr");
   prim("pair?", 1, "p_pairp"); prim("null?", 1, "p_nullp"); prim("list?", 1, "p_listp");
   prim("list", -1, "v_list"); prim("length", 1, "p_length"); prim("reverse", 1, "p_reverse");

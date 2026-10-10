@@ -3,8 +3,11 @@
 
 char ibuf[65536]; int ipos; int ilen; int ieof;
 int iline = 1;
+/* reading from a string instead: rsp[rsi .. rsn) */
+char *rsp; int rsi; int rsn; int rson;
 int igetc() {
   int c;
+  if (rson) { if (rsi >= rsn) return -1; return rsp[rsi++] & 255; }
   if (ipos == ilen) {
     if (ieof) return -1;
     ilen = sys_read(ibuf, 65536); ipos = 0;
@@ -15,7 +18,9 @@ int igetc() {
   return c;
 }
 int ipeek() {
-  int c = igetc();
+  int c;
+  if (rson) { if (rsi >= rsn) return -1; return rsp[rsi] & 255; }
+  c = igetc();
   if (c >= 0) { ipos--; if (c == '\n') iline--; }
   return c;
 }
@@ -257,6 +262,19 @@ long read1() {
   }
   return EOFV;
 }
+
+/* read a datum from p[*at .. n); returns it, and where reading stopped */
+int readend;
+long readstr(char *p, int at, int n) {
+  long x; char *sp = rsp; int si = rsi; int sn = rsn; int so = rson;
+  rsp = p; rsi = at; rsn = n; rson = 1;
+  x = readdatum();
+  readend = rsi;
+  rsp = sp; rsi = si; rsn = sn; rson = so;
+  return x;
+}
+/* a constant, from its written form */
+long kread(char *p) { return readstr(p, 0, slen(p)); }
 
 void read_init() {
   S_quote = sym("quote"); S_quasiquote = sym("quasiquote");

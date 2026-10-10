@@ -167,10 +167,10 @@ long p_div(long a, long b) {
   return mkdbl(numd(a, "/") / numd(b, "/"));
 }
 long p_numeq(long a, long b) { return B(n_eq(a, b)); }
-long p_lt(long a, long b) { if (isfix(a) && isfix(b)) return B(a < b); return B(n_lt(a, b)); }
-long p_gt(long a, long b) { if (isfix(a) && isfix(b)) return B(a > b); return B(n_lt(b, a)); }
-long p_le(long a, long b) { if (isfix(a) && isfix(b)) return B(a <= b); return B(n_le(a, b)); }
-long p_ge(long a, long b) { if (isfix(a) && isfix(b)) return B(a >= b); return B(n_le(b, a)); }
+long p_lt(long a, long b) { if (isfix(a) && isfix(b)) return B((a << 16) < (b << 16)); return B(n_lt(a, b)); }
+long p_gt(long a, long b) { if (isfix(a) && isfix(b)) return B((a << 16) > (b << 16)); return B(n_lt(b, a)); }
+long p_le(long a, long b) { if (isfix(a) && isfix(b)) return B((a << 16) <= (b << 16)); return B(n_le(a, b)); }
+long p_ge(long a, long b) { if (isfix(a) && isfix(b)) return B((a << 16) >= (b << 16)); return B(n_le(b, a)); }
 long p_zerop(long a) { if (isint(a)) return B(ival(a) == 0); return B(numd(a, "zero?") == 0); }
 long p_positivep(long a) { if (isint(a)) return B(ival(a) > 0); return B(numd(a, "positive?") > 0); }
 long p_negativep(long a) { if (isint(a)) return B(ival(a) < 0); return B(numd(a, "negative?") < 0); }
@@ -331,6 +331,27 @@ long p_cddr(long p) { return p_cdr(p_cdr(p)); }
 long p_caddr(long p) { return p_car(p_cdr(p_cdr(p))); }
 long p_cdddr(long p) { return p_cdr(p_cdr(p_cdr(p))); }
 long p_cadddr(long p) { return p_car(p_cdr(p_cdr(p_cdr(p)))); }
+long p_caaar(long p) { return p_car(p_car(p_car(p))); }
+long p_caadr(long p) { return p_car(p_car(p_cdr(p))); }
+long p_cadar(long p) { return p_car(p_cdr(p_car(p))); }
+long p_cdaar(long p) { return p_cdr(p_car(p_car(p))); }
+long p_cdadr(long p) { return p_cdr(p_car(p_cdr(p))); }
+long p_cddar(long p) { return p_cdr(p_cdr(p_car(p))); }
+long p_caaaar(long p) { return p_car(p_car(p_car(p_car(p)))); }
+long p_caaadr(long p) { return p_car(p_car(p_car(p_cdr(p)))); }
+long p_caadar(long p) { return p_car(p_car(p_cdr(p_car(p)))); }
+long p_caaddr(long p) { return p_car(p_car(p_cdr(p_cdr(p)))); }
+long p_cadaar(long p) { return p_car(p_cdr(p_car(p_car(p)))); }
+long p_cadadr(long p) { return p_car(p_cdr(p_car(p_cdr(p)))); }
+long p_caddar(long p) { return p_car(p_cdr(p_cdr(p_car(p)))); }
+long p_cdaaar(long p) { return p_cdr(p_car(p_car(p_car(p)))); }
+long p_cdaadr(long p) { return p_cdr(p_car(p_car(p_cdr(p)))); }
+long p_cdadar(long p) { return p_cdr(p_car(p_cdr(p_car(p)))); }
+long p_cdaddr(long p) { return p_cdr(p_car(p_cdr(p_cdr(p)))); }
+long p_cddaar(long p) { return p_cdr(p_cdr(p_car(p_car(p)))); }
+long p_cddadr(long p) { return p_cdr(p_cdr(p_car(p_cdr(p)))); }
+long p_cdddar(long p) { return p_cdr(p_cdr(p_cdr(p_car(p)))); }
+long p_cddddr(long p) { return p_cdr(p_cdr(p_cdr(p_cdr(p)))); }
 long p_pairp(long a) { return B(otype(a) == OPAIR); }
 long p_nullp(long a) { return B(a == NULL); }
 long p_listp(long a) {

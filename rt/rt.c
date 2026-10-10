@@ -60,7 +60,7 @@ char *alloc(int n) {
   char *p;
   n = (n + 7) & ~7;
   if (hp + n > hend) {
-    if (n > 65536) return malloc(n);
+    if (n > 65536) { p = malloc(n); if (!p) die("out of memory", ""); return p; }
     hp = malloc(1048576);
     if (!hp) die("out of memory", "");
     hend = hp + 1048576;
@@ -322,7 +322,7 @@ long fdivi(long x, long y) {
 /* comparisons, exact even between integers and floats */
 int n_lt(long a, long b) {
   long i; double f;
-  if (isfix(a) && isfix(b)) return a < b;
+  if (isfix(a) && isfix(b)) return (a << 16) < (b << 16);
   if (isint(a) && isint(b)) return ival(a) < ival(b);
   if (isdbl(a) && isdbl(b)) return dval(a) < dval(b);
   if (isint(a)) {   /* i < f */
@@ -352,7 +352,7 @@ int n_eq(long a, long b) {
   return 0;
 }
 int n_le(long a, long b) {
-  if (isfix(a) && isfix(b)) return a <= b;
+  if (isfix(a) && isfix(b)) return (a << 16) <= (b << 16);
   return n_lt(a, b) || n_eq(a, b);
 }
 
